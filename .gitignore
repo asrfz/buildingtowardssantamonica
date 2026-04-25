@@ -19,6 +19,9 @@ frontend/package-lock.json
 frontend/dist/
 frontend/.vite/
 
+# Claude Code
+.claude/
+
 # IDE
 .vscode/
 .idea/
