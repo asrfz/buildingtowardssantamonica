@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # MongoDB
     MONGODB_URI: str = "mongodb://localhost:27017"
+    MONGODB_DB_NAME: str = "homepulse"
 
     # Cloudinary
     CLOUDINARY_CLOUD_NAME: str = ""

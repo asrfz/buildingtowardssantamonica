@@ -17,4 +17,4 @@ async def close_db() -> None:
 
 
 def get_db() -> AsyncIOMotorDatabase:
-    return _client["homepulse"]
+    return _client[settings.MONGODB_DB_NAME]

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.config import settings
 from app.database import connect_db, close_db
-from app.routers import sensor, events, users, zones, alerts
+from app.routers import sensor, events, users, zones, alerts, integration
 
 logging.basicConfig(level=logging.INFO)
 
@@ -33,3 +33,4 @@ app.include_router(events.router,  prefix="/events",  tags=["events"])
 app.include_router(users.router,   prefix="/users",   tags=["users"])
 app.include_router(zones.router,   prefix="/zones",   tags=["zones"])
 app.include_router(alerts.router,  prefix="/alerts",  tags=["alerts"])
+app.include_router(integration.router, prefix="/integration", tags=["integration"])
