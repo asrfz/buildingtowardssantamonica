@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # Anthropic Claude API
     ANTHROPIC_API_KEY: str = ""
 
+    # ElevenLabs TTS
+    ELEVENLABS_API_KEY: str = ""
+    ELEVENLABS_VOICE_ID: str = "21m00Tcm4TlvDq8ikWAM"   # Rachel — default, override in .env
+
     # App Settings
     APP_ENV: str = "development"
     DEFAULT_USER_ID: str = ""

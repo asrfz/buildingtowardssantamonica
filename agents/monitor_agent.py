@@ -122,6 +122,7 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
             suggested_service=suggested_service,
             image_url=vision.cropped_url,
             timestamp_iso=datetime.utcnow().isoformat(),
+            sensor_payload=history.sensor_payload,
         ),
     )
 

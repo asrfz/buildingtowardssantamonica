@@ -24,6 +24,7 @@ The system self-learns from past events, building a behavioral schema per user i
 | Database | MongoDB (via Motor async driver) |
 | Vision | OpenCV + webcam (demo via laptop webcam, index 0) |
 | Image Processing | Cloudinary Python SDK (`pip install cloudinary`) |
+| Spoken guidance | ElevenLabs TTS (`elevenlabs` + local playback via `pygame`) |
 | Email Notifications | Gmail SMTP with App Password (no OAuth needed for demo) |
 | Hardware | Arduino (serial communication to Python via pyserial) |
 | Frontend (optional) | React via `create-cloudinary-react` scaffold (separate project) |
@@ -31,17 +32,18 @@ The system self-learns from past events, building a behavioral schema per user i
 ### LLM Architecture — Critical Rule
 FetchAI uAgents is **orchestration only**. It handles agent-to-agent messaging, scheduling, and Agentverse registration — zero built-in intelligence. Claude API (`ANTHROPIC_API_KEY`) is the reasoning brain, injected at specific agent touchpoints only.
 
-**Claude is called once per triggered event** — never on every sensor reading. Costs stay near zero for demo.
+**Claude is not invoked on every sensor reading** (that stays local math). A confirmed event uses Claude in layers (triage → optional vision object detection → monitor → email, plus optional per-tick calls during `voice_agent` guidance). Costs stay controlled because raw sensor traffic never hits the API.
 
 | Agent | Calls Claude? | Purpose |
 |---|---|---|
 | `sensor_agent` | ❌ | Math only — deviation scoring |
 | `triage_agent` | ✅ | Is this worth investigating? Noise filter |
 | `history_agent` | ❌ | MongoDB reader — pulls user context |
-| `vision_agent` | ❌ | OpenCV + Cloudinary only |
-| `monitor_agent` | ✅ | Full reasoning: image + history + sensors → decision |
+| `vision_agent` | ✅ (vision) | OpenCV frame + Claude object boxes + Cloudinary (`q_auto`); may send `VoiceAlert` |
+| `monitor_agent` | ✅ | Text reasoning with cropped image URL + history + sensors |
 | `escalation_agent` | ❌ | Rule-based severity ladder |
 | `notification_agent` | ✅ | Writes natural language email body |
+| `voice_agent` | ✅ (vision) | ElevenLabs TTS + OpenCV ticks + `locate_object_and_user_in_frame` + `spatial_service` |
 | `learning_agent` | ✅ optional | Summarizes behavioral pattern changes |
 | `report_agent` | ✅ | Weekly digest email written by Claude |
 | `heartbeat_agent` | ❌ | Watchdog — no reasoning needed |
@@ -117,9 +119,9 @@ sensor_agent              ← hardware bridge, pure math, no LLM
 triage_agent              ← Claude: is this real? filter noise early
       ↓ [confirmed worth investigating]
       ├── history_agent   ← parallel: pulls MongoDB user context (no LLM)
-      └── vision_agent    ← parallel: webcam → OpenCV → Cloudinary (no LLM)
-            ↓ [both return results to monitor_agent]
-      monitor_agent       ← Claude: full reasoning with image + history + sensors
+      └── vision_agent    ← parallel: OpenCV + Claude object boxes + Cloudinary; may → voice_agent
+            ↓ [history + vision results to monitor_agent; voice may run in parallel after VoiceAlert]
+      monitor_agent       ← Claude: reasoning with image URL + history + sensors
             ↓
       escalation_agent    ← rule-based severity ladder + contact routing (no LLM)
             ↓
@@ -155,11 +157,16 @@ triage_agent              ← Claude: is this real? filter noise early
 - Packages into `UserHistoryContext` and returns to `monitor_agent`
 
 #### `vision_agent`
-- Captures webcam frame via `cv2.VideoCapture(0)`
-- Looks up zone bounding box from MongoDB `room_zones`
-- Uploads raw frame to Cloudinary
-- Applies crop + sharpen transformation to zone of interest
-- Returns `VisionResult` with raw URL + cropped URL to `monitor_agent`
+- Captures a webcam frame via `cv2.VideoCapture` (`WEBCAM_INDEX` in settings)
+- Primary: `claude_service.detect_objects_in_frame` on a JPEG of the frame to get fractional boxes for the event’s target object; fallback: MongoDB `room_zones` (pixel boxes; no `VoiceAlert` in that case)
+- Uploads the raw frame to Cloudinary, builds a zone crop with `fl_relative` when coords are 0–1, plus sharpen/improve/`q_auto`
+- Returns `VisionResult` (raw + cropped URLs) to `monitor_agent`
+- If the zone is fractional, sends `VoiceAlert` to `voice_agent` so TTS and the correction loop can use the same coordinate space as Cloudinary
+
+#### `voice_agent`
+- Receives `VoiceAlert` from `vision_agent` when fractional coords exist; speaks via ElevenLabs (`tts_service`) using a warm model for the first line and a low-latency model for corrections
+- On an interval, captures another OpenCV frame, encodes to base64 in `cloudinary_service.frame_to_base64`, and calls `locate_object_and_user_in_frame` (no Cloudinary on ticks)
+- `spatial_service` turns boxes into short phrases; ends when the object is off-frame, positions converge, or a timeout
 
 #### `monitor_agent`
 - Waits for both `history_agent` and `vision_agent` results

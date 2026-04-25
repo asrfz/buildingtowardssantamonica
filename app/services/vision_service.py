@@ -101,6 +101,21 @@ async def get_zone_for_event(user_id: str, event_type: str, db) -> dict | None:
     return zone
 
 
+def _pixel_zone_to_fractional(zone: dict, frame: np.ndarray) -> dict:
+    """Convert stored pixel bbox to 0–1 coords so Cloudinary fl_relative and voice_agent match."""
+    h, w = frame.shape[0], frame.shape[1]
+    if w <= 0 or h <= 0:
+        return {**zone, "pct": False}
+    return {
+        "name": zone.get("name", "object"),
+        "x": float(zone["x"]) / w,
+        "y": float(zone["y"]) / h,
+        "w": float(zone["w"]) / w,
+        "h": float(zone["h"]) / h,
+        "pct": True,
+    }
+
+
 async def get_zone_dynamic_or_fallback(
     frame: np.ndarray,
     user_id: str,
@@ -109,11 +124,14 @@ async def get_zone_dynamic_or_fallback(
 ) -> dict | None:
     """
     Primary path: detect zone via Claude vision on the live frame.
-    Fallback: use stored MongoDB zone coordinates.
+    Fallback: MongoDB room_zones (pixels) → normalized to fractional so crop + VoiceAlert work.
     """
     zone = await detect_zone_in_frame(frame, event_type)
     if zone:
         return zone
 
     logger.info(f"Falling back to MongoDB zone for {event_type}")
-    return await get_zone_for_event(user_id, event_type, db)
+    z = await get_zone_for_event(user_id, event_type, db)
+    if not z:
+        return None
+    return _pixel_zone_to_fractional(z, frame)

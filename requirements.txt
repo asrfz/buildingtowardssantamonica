@@ -8,9 +8,12 @@ pyserial
 opencv-python
 cloudinary
 anthropic
+httpx
 uagents
 numpy
 Pillow
+elevenlabs
+pygame
 pytest
 pytest-asyncio
 pytest-mock

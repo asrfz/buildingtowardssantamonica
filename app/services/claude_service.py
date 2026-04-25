@@ -1,8 +1,10 @@
 import asyncio
+import base64
 import json
 import re
 import logging
 import anthropic
+import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,9 @@ async def triage_event(
 
 # ── Full event reasoning (Milestone 2 — monitor_agent) ──────────────────────
 
+_MEDIA_ALLOW = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+
 def _reason_about_event_sync(
     sensor_data: dict,
     deviation_score: float,
@@ -82,15 +87,17 @@ def _reason_about_event_sync(
     behavioral_schema: dict,
     hour: int,
     day_type: str,
+    image_b64: str | None = None,
+    image_media_type: str = "image/jpeg",
 ) -> dict:
     prompt = f"""You are HomePulse, a household safety AI for elderly users.
 
 Analyze this household anomaly and determine the appropriate response.
+{"You can see the cropped alert image attached." if image_b64 else f"Cropped image URL (may be unavailable in this request): {image_url}"}
 
 Sensor data: {sensor_data}
 Deviation: {deviation_score:.1f}x above baseline
 Time: {hour}:00 {day_type}
-Cropped image URL: {image_url}
 User's recent event history: {user_history}
 User behavioral schema: {behavioral_schema}
 
@@ -103,12 +110,46 @@ Respond with JSON only:
   "reasoning": "two sentences max"
 }}"""
 
+    if image_b64 and image_media_type in _MEDIA_ALLOW:
+        user_content: list[dict] | str = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image_media_type,
+                    "data": image_b64,
+                },
+            },
+            {"type": "text", "text": prompt},
+        ]
+    else:
+        user_content = prompt
+
     response = _client.messages.create(
         model=MODEL,
         max_tokens=400,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": user_content}],
     )
     return _parse_json(response.content[0].text)
+
+
+async def _fetch_monitor_image(
+    image_url: str,
+) -> tuple[str | None, str]:
+    """Return (base64, media_type) for Cloudinary/HTTPS image URLs; no auth needed for public URLs."""
+    if not image_url or not image_url.strip():
+        return None, "image/jpeg"
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            r = await client.get(image_url)
+            r.raise_for_status()
+            raw = (r.headers.get("content-type") or "image/jpeg").split(";")[0].strip()
+            if raw not in _MEDIA_ALLOW:
+                raw = "image/jpeg"
+            return base64.b64encode(r.content).decode("utf-8"), raw
+    except Exception as e:
+        logger.warning("Monitor: could not fetch image for multimodal reasoning: %s", e)
+        return None, "image/jpeg"
 
 
 async def reason_about_event(
@@ -120,6 +161,7 @@ async def reason_about_event(
     hour: int,
     day_type: str,
 ) -> dict:
+    b64, media = await _fetch_monitor_image(image_url)
     return await asyncio.to_thread(
         _reason_about_event_sync,
         sensor_data,
@@ -129,6 +171,8 @@ async def reason_about_event(
         behavioral_schema,
         hour,
         day_type,
+        b64,
+        media,
     )
 
 
@@ -343,3 +387,59 @@ def _detect_objects_sync(image_b64: str) -> list[dict]:
 async def detect_objects_in_frame(image_b64: str) -> list[dict]:
     """Use Claude vision to detect household objects and return bounding boxes as fractions (0-1)."""
     return await asyncio.to_thread(_detect_objects_sync, image_b64)
+
+
+# ── Voice correction: locate object + person in frame ────────────────────────
+
+_LOCATE_PROMPT = """You are a spatial awareness system for a home safety assistant.
+
+Analyze this image and find:
+1. The {object_name} — give its bounding box
+2. Any person visible anywhere in the frame — give their bounding box
+
+Bounding box values are fractions of the image (0.0 = left/top edge, 1.0 = right/bottom edge):
+  x = left edge, y = top edge, w = width, h = height
+
+Respond with JSON only — no explanation:
+{{
+  "object": {{"found": true, "x": 0.1, "y": 0.4, "w": 0.15, "h": 0.12}},
+  "person": {{"found": false}}
+}}
+
+If something is not visible set found to false and omit x/y/w/h."""
+
+
+def _locate_object_and_user_sync(image_b64: str, object_name: str) -> dict:
+    prompt = _LOCATE_PROMPT.format(object_name=object_name)
+    response = _client.messages.create(
+        model=MODEL,
+        max_tokens=250,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": image_b64,
+                    },
+                },
+                {"type": "text", "text": prompt},
+            ],
+        }],
+    )
+    return _parse_json(response.content[0].text)
+
+
+async def locate_object_and_user_in_frame(image_b64: str, object_name: str) -> dict:
+    """
+    Detect where a specific object and any person are in a webcam frame.
+
+    Returns fractional bounding boxes (0.0–1.0) for use by spatial_service
+    to compute directional corrections for the voice agent.
+
+    Called every correction tick (every ~3 s) — uses base64 directly so
+    frames are NOT uploaded to Cloudinary (no cost/latency for guidance ticks).
+    """
+    return await asyncio.to_thread(_locate_object_and_user_sync, image_b64, object_name)

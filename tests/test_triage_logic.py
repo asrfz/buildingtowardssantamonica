@@ -13,7 +13,7 @@ No real API calls — Claude is mocked via pytest-mock.
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from bson import ObjectId
-from tests.conftest import DEMO_USER_ID, DEMO_EVENT_ID
+from test_support.constants import DEMO_EVENT_ID, DEMO_USER_ID
 
 
 # Simulated Claude responses
