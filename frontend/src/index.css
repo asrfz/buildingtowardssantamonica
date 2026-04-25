@@ -1,20 +1,61 @@
-*, *::before, *::after {
+:root {
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color: #0f172a;
+  background: #f8fafc;
+}
+
+* {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  color: #111827;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 20px;
+}
+
+.subtitle {
+  color: #475569;
+  margin-top: 4px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 16px;
 }
 
 button {
-  font-family: inherit;
+  margin-top: 10px;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-weight: 600;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
 }
 
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 3px #dcfce7; }
-  50%       { box-shadow: 0 0 0 6px #bbf7d0; }
+button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.warn {
+  color: #b45309;
+  margin-top: 10px;
+}
+
+.muted {
+  color: #64748b;
 }

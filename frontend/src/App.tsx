@@ -1,115 +1,104 @@
-import { useState } from 'react'
-import { Dashboard } from './components/Dashboard'
-import { ZoneCalibrator } from './components/ZoneCalibrator'
+import { useEffect, useState } from 'react'
+import { AdvancedImage } from '@cloudinary/react'
+import { Cloudinary } from '@cloudinary/url-gen'
+import { fill } from '@cloudinary/url-gen/actions/resize'
 
-const USER_ID = import.meta.env.VITE_USER_ID ?? ''
+declare global {
+  interface Window {
+    cloudinary?: {
+      createUploadWidget: (
+        options: Record<string, unknown>,
+        callback: (
+          error: unknown,
+          result: { event?: string; info?: { public_id?: string; secure_url?: string } }
+        ) => void
+      ) => { open: () => void }
+    }
+  }
+}
 
-type Tab = 'dashboard' | 'calibrate'
+const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME
+const unsignedPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET
+const signedPreset = import.meta.env.VITE_CLOUDINARY_SIGNED_PRESET
 
-export function App() {
-  const [tab, setTab] = useState<Tab>('dashboard')
+const cld = new Cloudinary({
+  cloud: { cloudName },
+  url: { secure: true },
+})
 
-  if (!USER_ID) {
-    return (
-      <div style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: '#f9fafb',
-        fontFamily: 'Inter, sans-serif',
-      }}>
-        <div style={{
-          background: '#fff',
-          border: '1px solid #e5e7eb',
-          borderRadius: 12,
-          padding: 32,
-          maxWidth: 480,
-          textAlign: 'center',
-        }}>
-          <div style={{ fontSize: 36, marginBottom: 12 }}>🏠</div>
-          <h2 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 700 }}>HomePulse AI</h2>
-          <p style={{ margin: '0 0 16px', color: '#6b7280', fontSize: 14 }}>
-            Set <code style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: 4 }}>VITE_USER_ID</code> in{' '}
-            <code style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: 4 }}>frontend/.env.local</code>{' '}
-            to the MongoDB ObjectId printed by <code>scripts/seed_demo.py</code>.
-          </p>
-          <p style={{ margin: 0, color: '#9ca3af', fontSize: 12 }}>
-            Example: VITE_USER_ID=6637f2a4e1b2c3d4e5f60000
-          </p>
-        </div>
-      </div>
+function App() {
+  const [widgetReady, setWidgetReady] = useState(Boolean(window.cloudinary))
+  const [publicId, setPublicId] = useState<string>('')
+
+  useEffect(() => {
+    if (window.cloudinary) return
+
+    const script = document.createElement('script')
+    script.src = 'https://widget.cloudinary.com/v2.0/global/all.js'
+    script.async = true
+    script.onload = () => setWidgetReady(true)
+    document.body.appendChild(script)
+  }, [])
+
+  const previewImage = publicId
+    ? cld.image(publicId).resize(fill().width(720).height(420))
+    : null
+
+  function openUnsignedWidget() {
+    if (!window.cloudinary || !unsignedPreset) return
+
+    const widget = window.cloudinary.createUploadWidget(
+      {
+        cloudName,
+        uploadPreset: unsignedPreset,
+        multiple: false,
+        sources: ['local', 'camera', 'url'],
+        folder: 'homepulse/raw',
+      },
+      (error, result) => {
+        if (error || !result) return
+        if (result.event === 'success' && result.info?.public_id) {
+          setPublicId(result.info.public_id)
+        }
+      }
     )
+
+    widget.open()
   }
 
+  const isConfigured = Boolean(cloudName && unsignedPreset)
+
   return (
-    <div style={{ minHeight: '100vh', background: '#f9fafb', fontFamily: 'Inter, sans-serif' }}>
-      {/* Top nav */}
-      <header style={{
-        background: '#fff',
-        borderBottom: '1px solid #e5e7eb',
-        position: 'sticky',
-        top: 0,
-        zIndex: 10,
-      }}>
-        <div style={{
-          maxWidth: 960,
-          margin: '0 auto',
-          padding: '0 24px',
-          height: 56,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 24,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
-            <span style={{ fontSize: 22 }}>🏠</span>
-            <span style={{ fontWeight: 800, fontSize: 17, letterSpacing: '-0.01em' }}>HomePulse AI</span>
-            <span style={{
-              marginLeft: 4,
-              fontSize: 11,
-              background: '#eff6ff',
-              color: '#2563eb',
-              border: '1px solid #bfdbfe',
-              borderRadius: 6,
-              padding: '1px 7px',
-              fontWeight: 600,
-            }}>
-              BETA
-            </span>
-          </div>
+    <main className="page">
+      <h1>Cloudinary React Base</h1>
+      <p className="subtitle">
+        Fresh starter base is ready. Unsigned uploads run in frontend, and signed preset is saved for backend flow.
+      </p>
 
-          <nav style={{ display: 'flex', gap: 4 }}>
-            {([
-              { id: 'dashboard', label: 'Dashboard' },
-              { id: 'calibrate', label: 'Zone Setup' },
-            ] as { id: Tab; label: string }[]).map(({ id, label }) => (
-              <button
-                key={id}
-                onClick={() => setTab(id)}
-                style={{
-                  background: tab === id ? '#f3f4f6' : 'transparent',
-                  border: 'none',
-                  borderRadius: 6,
-                  padding: '6px 14px',
-                  fontSize: 13,
-                  fontWeight: tab === id ? 700 : 500,
-                  color: tab === id ? '#111827' : '#6b7280',
-                  cursor: 'pointer',
-                  transition: 'background 0.15s',
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
-        </div>
-      </header>
+      <section className="card">
+        <p><strong>Cloud name:</strong> {cloudName || 'missing'}</p>
+        <p><strong>Unsigned preset:</strong> {unsignedPreset || 'missing'}</p>
+        <p><strong>Signed preset:</strong> {signedPreset || 'missing'}</p>
+        <button onClick={openUnsignedWidget} disabled={!widgetReady || !isConfigured}>
+          Upload (unsigned)
+        </button>
+        {!isConfigured && (
+          <p className="warn">
+            Set `VITE_CLOUDINARY_CLOUD_NAME` and `VITE_CLOUDINARY_UPLOAD_PRESET` in `frontend/.env.local`.
+          </p>
+        )}
+      </section>
 
-      {/* Page body */}
-      <main style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
-        {tab === 'dashboard' && <Dashboard userId={USER_ID} />}
-        {tab === 'calibrate' && <ZoneCalibrator userId={USER_ID} />}
-      </main>
-    </div>
+      <section className="card">
+        <h2>Preview</h2>
+        {previewImage ? (
+          <AdvancedImage cldImg={previewImage} />
+        ) : (
+          <p className="muted">Upload an image to verify the pipeline.</p>
+        )}
+      </section>
+    </main>
   )
 }
+
+export default App
