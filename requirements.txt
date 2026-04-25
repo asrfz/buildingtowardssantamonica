@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+motor
+pydantic
+pydantic-settings
+python-dotenv
+pyserial
+opencv-python
+cloudinary
+anthropic
+uagents
+numpy
+Pillow
