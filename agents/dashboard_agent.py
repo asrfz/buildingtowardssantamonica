@@ -1,0 +1,191 @@
+"""
+dashboard_agent — HomePulse conversational gateway for ASI:One.
+
+Run alongside FastAPI in a separate terminal:
+    python agents/dashboard_agent.py
+
+Connects to Agentverse via mailbox — no ngrok needed for ASI:One chat.
+"""
+import sys
+import os
+import logging
+from datetime import datetime, timezone, timedelta
+from uuid import uuid4
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from bson import ObjectId
+from uagents import Agent, Context, Protocol
+from uagents_core.contrib.protocols.chat import (
+    chat_protocol_spec,
+    ChatMessage,
+    ChatAcknowledgement,
+    TextContent,
+    StartSessionContent,
+)
+
+from app.config import settings
+from app.database import connect_db, get_db
+from app.services import claude_service
+
+logger = logging.getLogger(__name__)
+
+dashboard_agent = Agent(
+    name="homepulse",
+    seed=settings.FETCHAI_AGENT_SEED + "_dashboard",
+    port=8001,
+    mailbox=True,
+    agentverse={
+        "api_key": settings.AGENTVERSE_KEY,
+        "url": "https://agentverse.ai",
+    },
+)
+
+chat_proto = Protocol(spec=chat_protocol_spec)
+
+_WELCOME = (
+    "HomePulse home safety AI online. "
+    "Ask me what happened at home, about recent alerts, "
+    "or Margaret's current home status."
+)
+
+
+# ── Startup ──────────────────────────────────────────────────────────────────
+
+@dashboard_agent.on_event("startup")
+async def startup(ctx: Context) -> None:
+    await connect_db()
+    ctx.logger.info(f"HomePulse online — {dashboard_agent.address}")
+
+
+# ── Keep heartbeat fresh every 90s so system shows as online during demo ─────
+
+@dashboard_agent.on_interval(period=90.0)
+async def refresh_heartbeat(ctx: Context) -> None:
+    try:
+        db = get_db()
+        await db.agent_heartbeats.update_one(
+            {"agent": "sensor_agent"},
+            {"$set": {"last_seen": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+    except Exception as e:
+        ctx.logger.warning(f"Heartbeat refresh failed: {e}")
+
+
+# ── Chat protocol handlers ────────────────────────────────────────────────────
+
+@chat_proto.on_message(ChatAcknowledgement)
+async def handle_ack(ctx: Context, sender: str, msg: ChatAcknowledgement) -> None:
+    pass
+
+
+@chat_proto.on_message(ChatMessage)
+async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
+    await ctx.send(sender, ChatAcknowledgement(acknowledged_msg_id=msg.msg_id))
+
+    # Use the convenience .text() method — handles all content types safely
+    query = msg.text().strip()
+
+    # Session-open handshake or empty message → send welcome
+    has_session_open = any(isinstance(c, StartSessionContent) for c in msg.content)
+    if has_session_open or not query:
+        await ctx.send(sender, ChatMessage(content=[TextContent(type="text", text=_WELCOME)]))
+        return
+
+    ctx.logger.info(f"Query from {sender[:20]}: {query!r}")
+
+    try:
+        reply = await _build_response(query)
+    except Exception as e:
+        ctx.logger.error(f"Response error: {e}", exc_info=True)
+        reply = (
+            "I'm having trouble fetching home data right now. "
+            "Please try again in a moment."
+        )
+
+    await ctx.send(sender, ChatMessage(content=[TextContent(type="text", text=reply)]))
+
+
+dashboard_agent.include(chat_proto, publish_manifest=True)
+
+
+# ── Core response builder ─────────────────────────────────────────────────────
+
+async def _build_response(query: str) -> str:
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    # ── System online status ─────────────────────────────────────────────────
+    heartbeat = await db.agent_heartbeats.find_one({"agent": "sensor_agent"})
+    system_online = False
+    last_seen_ago = "never"
+    if heartbeat:
+        last_seen = heartbeat.get("last_seen")
+        if last_seen:
+            # Handle both timezone-aware and naive datetimes from MongoDB
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+            silence = (now - last_seen).total_seconds()
+            system_online = silence < settings.HEARTBEAT_TIMEOUT_SECONDS
+            last_seen_ago = f"{int(silence)}s ago"
+
+    # ── User info ────────────────────────────────────────────────────────────
+    user = None
+    if settings.DEFAULT_USER_ID:
+        try:
+            user = await db.users.find_one({"_id": ObjectId(settings.DEFAULT_USER_ID)})
+        except Exception:
+            pass
+    user_name = user["name"] if user else "the resident"
+
+    # ── Recent events — last 7 days, newest first ────────────────────────────
+    cutoff = now - timedelta(days=7)
+    raw_events = await (
+        db.events
+        .find({"detected_at": {"$gte": cutoff.replace(tzinfo=None)}})
+        .sort("detected_at", -1)
+        .limit(15)
+        .to_list(15)
+    )
+
+    events_summary = []
+    for e in raw_events:
+        detected_at = e.get("detected_at")
+        if isinstance(detected_at, datetime):
+            detected_str = detected_at.strftime("%Y-%m-%d %H:%M UTC")
+        else:
+            detected_str = str(detected_at) if detected_at else "unknown"
+
+        events_summary.append({
+            "event_type": e.get("event_type", "UNKNOWN"),
+            "severity": e.get("severity", "UNKNOWN"),
+            "status": e.get("status", "unknown"),
+            "detected_at": detected_str,
+            "recommended_action": e.get("recommended_action") or "",
+        })
+
+    # ── Behavioral schema ────────────────────────────────────────────────────
+    threshold_info: dict = {}
+    if settings.DEFAULT_USER_ID:
+        try:
+            schema = await db.behavioral_schema.find_one(
+                {"user_id": ObjectId(settings.DEFAULT_USER_ID)}
+            )
+            if schema:
+                threshold_info = schema.get("event_type_history", {})
+        except Exception:
+            pass
+
+    return await claude_service.answer_dashboard_query(
+        user_query=query,
+        system_online=system_online,
+        last_seen_ago=last_seen_ago,
+        user_name=user_name,
+        events_summary=events_summary,
+        threshold_info=threshold_info,
+    )
+
+
+if __name__ == "__main__":
+    dashboard_agent.run()

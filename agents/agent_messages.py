@@ -3,14 +3,15 @@ from typing import Optional
 
 # ── Agent addresses ──────────────────────────────────────────────────────────
 # Run `python scripts/register_agents.py` to print these, then paste them here.
-SENSOR_AGENT_ADDRESS        = ""
-TRIAGE_AGENT_ADDRESS        = ""
-HISTORY_AGENT_ADDRESS       = ""
-VISION_AGENT_ADDRESS        = ""
-MONITOR_AGENT_ADDRESS       = ""
-ESCALATION_AGENT_ADDRESS    = ""
-NOTIFICATION_AGENT_ADDRESS  = ""
-LEARNING_AGENT_ADDRESS      = ""
+DASHBOARD_AGENT_ADDRESS     = ""   # run scripts/register_agents.py after adding dashboard seed
+SENSOR_AGENT_ADDRESS        = "agent1qthfw9s49lm0vajvk4cpxpws35qmqz8d0g3zf9gqx3dw267gtpdvure95fr"
+TRIAGE_AGENT_ADDRESS        = "agent1q0syk8pz50n9782exz46r0uwls9c2vlmkf7m09k3zhngal6zw4pgqwrjqef"
+HISTORY_AGENT_ADDRESS       = "agent1qglju8pw38fa8l48353jwdgf84rd8rfee30rg7seqwqwfpwefvrmk9fj4c7"
+VISION_AGENT_ADDRESS        = "agent1qwj8lct6dq9nrc97ajsn0yp6qkq3y8ca8ntcps2e3pjv6wyay6hf7vgvcuy"
+MONITOR_AGENT_ADDRESS       = "agent1qtl5yptjsv883x23lkt6f73m6888z0npcm2leesc32glxtf2mmzxxazeupq"
+ESCALATION_AGENT_ADDRESS    = "agent1q23jna0hlra5lrk8pyaf6sryksnrllrvx0mrefyhtl2p793ssd9wq4yv8ds"
+NOTIFICATION_AGENT_ADDRESS  = "agent1qv7awy8whgjc0de3aylfzr2t0y0flh4d54h7yee0lu4fejpj2qyzxgdhkne"
+LEARNING_AGENT_ADDRESS      = "agent1qwqyq0k9t9nk37lt7g4q2qsd8lzv7lju9k2lwzrhl9g5gpzuugckc0kzunc"
 REPORT_AGENT_ADDRESS        = ""
 HEARTBEAT_AGENT_ADDRESS     = ""
 

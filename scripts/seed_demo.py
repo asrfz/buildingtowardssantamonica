@@ -31,7 +31,7 @@ async def seed() -> None:
         "created_at": datetime.utcnow(),
     })
     user_id = result.inserted_id
-    print(f"\n✅ Demo user created: {user_id}")
+    print(f"\n[OK] Demo user created: {user_id}")
     print(f"   Add this to .env:\n   DEFAULT_USER_ID={user_id}\n")
 
     # ── 2. Seed baselines for all 24 hours × 2 day types ────────────────────
@@ -55,7 +55,7 @@ async def seed() -> None:
                 "created_at": datetime.utcnow(),
             })
     await db.sensor_baselines.insert_many(baseline_docs)
-    print(f"✅ Inserted {len(baseline_docs)} baseline documents (24 hours × 2 day types)")
+    print(f"[OK] Inserted {len(baseline_docs)} baseline documents (24 hours x 2 day types)")
 
     # ── 3. Seed room zones (stove, sink, fridge) ─────────────────────────────
     await db.room_zones.insert_one({
@@ -67,7 +67,7 @@ async def seed() -> None:
         },
         "created_at": datetime.utcnow(),
     })
-    print("✅ Room zones seeded (stove, sink, fridge)")
+    print("[OK] Room zones seeded (stove, sink, fridge)")
 
     # ── 4. Empty behavioral schema ───────────────────────────────────────────
     await db.behavioral_schema.insert_one({
@@ -75,7 +75,7 @@ async def seed() -> None:
         "event_type_history": {},
         "updated_at": datetime.utcnow(),
     })
-    print("✅ Behavioral schema initialized")
+    print("[OK] Behavioral schema initialized")
 
     print("\nSetup complete. Don't forget to set DEFAULT_USER_ID in your .env file.")
     client.close()

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Inject a simulated hot sensor reading to trigger the full agent pipeline.
 Use this when you don't have Arduino hardware connected.
@@ -11,44 +12,48 @@ Then in another terminal:
 Scenarios: stove (default), faucet, fridge
 """
 import sys
-import os
 import json
 import urllib.request
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timezone
 
 BASE_URL = "http://127.0.0.1:8000"
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 SCENARIOS = {
     "stove": {
         "sound_level": 210,
-        "temperature_c": 48.0,    # well above 22 + 2.5*1.5 = 25.75°C baseline
+        "temperature_c": 48.0,
         "magnetic_state": 0,
         "accel_x": 0.01,
         "accel_y": 0.02,
         "accel_z": 9.80,
         "pressure": 1013.0,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": None,  # filled at runtime
     },
     "faucet": {
-        "sound_level": 420,       # 300–500 range → FAUCET_RUNNING, above 200+2.5*50=325
+        "sound_level": 420,
         "temperature_c": 22.5,
         "magnetic_state": 0,
         "accel_x": 0.01,
         "accel_y": 0.01,
         "accel_z": 9.81,
         "pressure": 1013.0,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": None,
     },
     "fridge": {
         "sound_level": 205,
         "temperature_c": 23.0,
-        "magnetic_state": 1,      # door open → FRIDGE_OPEN
+        "magnetic_state": 1,
         "accel_x": 0.01,
         "accel_y": 0.01,
         "accel_z": 9.81,
         "pressure": 1013.0,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": None,
     },
 }
 
@@ -71,17 +76,17 @@ def main() -> None:
         print(f"Unknown scenario '{scenario}'. Choose: {', '.join(SCENARIOS)}")
         sys.exit(1)
 
-    payload = SCENARIOS[scenario]
+    payload = {**SCENARIOS[scenario], "timestamp": now_iso()}
+
     print(f"\nInjecting '{scenario}' scenario:")
-    print(f"  temp={payload['temperature_c']}°C  sound={payload['sound_level']}  mag={payload['magnetic_state']}")
+    print(f"  temp={payload['temperature_c']}C  sound={payload['sound_level']}  mag={payload['magnetic_state']}")
 
     try:
         result = post("/sensor/simulate", payload)
-        print(f"\n✅ Server response: {result['status']} — {result['message']}")
-        print("\nWatch the agent terminal windows for the pipeline firing.")
-        print("Check your inbox for the alert email (may take ~30 seconds).")
+        print(f"\n[OK] {result['status']} - {result['message']}")
+        print("Watch FastAPI logs for the pipeline. Check inbox for alert email (~30s).")
     except urllib.error.URLError as e:
-        print(f"\n❌ Could not reach server: {e}")
+        print(f"\n[ERROR] Could not reach server: {e}")
         print("Make sure FastAPI is running:  uvicorn app.main:app --reload")
 
 

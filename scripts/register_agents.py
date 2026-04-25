@@ -16,6 +16,7 @@ from uagents import Agent
 from app.config import settings
 
 AGENTS = [
+    ("dashboard",     "_dashboard"),   # user-facing ASI:One gateway — register this first
     ("sensor",        "_sensor"),
     ("triage",        "_triage"),
     ("history",       "_history"),
@@ -34,3 +35,4 @@ for name, suffix in AGENTS:
     const_name = f"{name.upper()}_AGENT_ADDRESS"
     print(f'{const_name:<30} = "{a.address}"')
 print()
+print("# Register homepulse_dashboard on Agentverse first — it's the ASI:One entry point.")

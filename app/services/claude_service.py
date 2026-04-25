@@ -226,3 +226,62 @@ async def write_weekly_digest(
     return await asyncio.to_thread(
         _write_weekly_digest_sync, events, user_name, caregiver_name
     )
+
+
+# ── ASI:One dashboard query ──────────────────────────────────────────────────
+
+def _answer_dashboard_query_sync(
+    user_query: str,
+    system_online: bool,
+    last_seen_ago: str,
+    user_name: str,
+    events_summary: list,
+    threshold_info: dict,
+) -> str:
+    prompt = f"""You are HomePulse, a smart home safety assistant for elderly users.
+A caregiver or family member is asking you a question via ASI:One chat.
+
+=== SYSTEM STATUS ===
+Sensor system online: {system_online}
+Last sensor heartbeat: {last_seen_ago}
+Monitoring: {user_name}
+
+=== EVENTS (last 7 days, newest first) ===
+{events_summary if events_summary else "No events recorded in the last 7 days."}
+
+=== BEHAVIORAL SCHEMA (per-event statistics) ===
+{threshold_info if threshold_info else "No behavioral data yet."}
+
+=== USER QUESTION ===
+{user_query}
+
+Answer in plain, warm, conversational language — as if you are a caring home safety assistant.
+No markdown headers or bullet lists. Max 4 sentences. Be specific: use the event data above.
+If the sensor system is offline, mention that first.
+If there are CRITICAL or HIGH severity events, highlight those prominently."""
+
+    response = _client.messages.create(
+        model=MODEL,
+        max_tokens=300,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text.strip()
+
+
+async def answer_dashboard_query(
+    user_query: str,
+    system_online: bool,
+    last_seen_ago: str,
+    user_name: str,
+    events_summary: list,
+    threshold_info: dict,
+) -> str:
+    return await asyncio.to_thread(
+        _answer_dashboard_query_sync,
+        user_query,
+        system_online,
+        last_seen_ago,
+        user_name,
+        events_summary,
+        threshold_info,
+    )

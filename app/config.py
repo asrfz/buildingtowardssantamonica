@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # FetchAI
     FETCHAI_AGENT_SEED: str = "homepulse_default_seed"
+    AGENTVERSE_KEY: str = ""
 
     # Anthropic Claude API
     ANTHROPIC_API_KEY: str = ""
