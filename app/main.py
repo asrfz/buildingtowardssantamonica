@@ -2,6 +2,7 @@ import logging
 import cloudinary
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import connect_db, close_db
 from app.routers import sensor, events, users, zones, alerts
@@ -27,6 +28,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="HomePulse AI", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(sensor.router,  prefix="/sensor",  tags=["sensor"])
 app.include_router(events.router,  prefix="/events",  tags=["events"])

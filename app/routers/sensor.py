@@ -1,8 +1,10 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from datetime import datetime
 from app.models.sensor import SensorPayload
 from app.models.event import EventResponse
 from app.services.anomaly_detector import score_reading
+from app.services.vision_service import capture_frame
+from app.services.cloudinary_service import upload_and_crop
 from app.utils.serial_reader import inject_reading
 from app.database import get_db
 
@@ -41,6 +43,35 @@ async def simulate_reading(payload: SensorPayload) -> EventResponse:
         status="injected",
         message=f"Reading injected — temp={payload.temperature_c}°C, sound={payload.sound_level}",
     )
+
+
+@router.post("/capture")
+async def capture_reference_frame() -> dict:
+    """
+    Capture a single webcam frame and upload it to Cloudinary as a reference image
+    for zone calibration. Returns the raw Cloudinary URL and public_id.
+    """
+    frame = await capture_frame()
+    if frame is None:
+        raise HTTPException(status_code=503, detail="Webcam unavailable")
+
+    import cloudinary.uploader
+    import cv2
+    from app.config import settings
+
+    _, buffer = cv2.imencode(".jpg", frame)
+    result = cloudinary.uploader.upload(
+        buffer.tobytes(),
+        public_id="homepulse/reference/calibration",
+        resource_type="image",
+        overwrite=True,
+    )
+    return {
+        "public_id": result["public_id"],
+        "url": result["secure_url"],
+        "width": result["width"],
+        "height": result["height"],
+    }
 
 
 @router.get("/baseline/{user_id}")
