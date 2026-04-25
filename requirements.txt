@@ -11,3 +11,6 @@ anthropic
 uagents
 numpy
 Pillow
+pytest
+pytest-asyncio
+pytest-mock
