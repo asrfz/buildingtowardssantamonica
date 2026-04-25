@@ -257,8 +257,11 @@ Monitoring: {user_name}
 
 Answer in plain, warm, conversational language — as if you are a caring home safety assistant.
 No markdown headers or bullet lists. Max 4 sentences. Be specific: use the event data above.
-If the sensor system is offline, mention that first.
-If there are CRITICAL or HIGH severity events, highlight those prominently."""
+
+Rules on when to mention sensor status:
+- ONLY mention the sensor being offline if the user is asking about current/live status, real-time monitoring, or whether the system is working RIGHT NOW.
+- For questions about past events, weekly summaries, history, or specific incidents — do NOT mention the sensor status at all. Just answer the question from the event data.
+- If there are CRITICAL or HIGH severity events relevant to the question, highlight those."""
 
     response = _client.messages.create(
         model=MODEL,
