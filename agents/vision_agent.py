@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 from uagents import Agent, Context
-from uagents.protocols.chat import ChatProtocol, ChatMessage
+from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services.vision_service import capture_frame, get_zone_for_event
@@ -14,7 +14,6 @@ vision_agent = Agent(
     name="homepulse_vision",
     seed=settings.FETCHAI_AGENT_SEED + "_vision",
 )
-vision_agent.include(ChatProtocol())
 
 
 @vision_agent.on_event("startup")

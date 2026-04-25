@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from bson import ObjectId
 from uagents import Agent, Context
-from uagents.protocols.chat import ChatProtocol, ChatMessage
+from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service
@@ -20,7 +20,6 @@ triage_agent = Agent(
     name="homepulse_triage",
     seed=settings.FETCHAI_AGENT_SEED + "_triage",
 )
-triage_agent.include(ChatProtocol())
 
 
 @triage_agent.on_event("startup")

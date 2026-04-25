@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from bson import ObjectId
 from uagents import Agent, Context
-from uagents.protocols.chat import ChatProtocol, ChatMessage
+from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import gmail_service
@@ -13,7 +13,6 @@ heartbeat_agent = Agent(
     name="homepulse_heartbeat",
     seed=settings.FETCHAI_AGENT_SEED + "_heartbeat",
 )
-heartbeat_agent.include(ChatProtocol())
 
 _offline_alert_sent = False  # debounce — only send once until sensor comes back
 

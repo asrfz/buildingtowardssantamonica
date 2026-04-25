@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from bson import ObjectId
 from uagents import Agent, Context
-from uagents.protocols.chat import ChatProtocol, ChatMessage
+from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service, gmail_service
@@ -14,7 +14,6 @@ notification_agent = Agent(
     name="homepulse_notification",
     seed=settings.FETCHAI_AGENT_SEED + "_notification",
 )
-notification_agent.include(ChatProtocol())
 
 
 @notification_agent.on_event("startup")

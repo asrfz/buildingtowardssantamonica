@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 from uagents import Agent, Context
-from uagents.protocols.chat import ChatProtocol, ChatMessage
+from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services.anomaly_detector import score_reading
@@ -15,7 +15,6 @@ sensor_agent = Agent(
     name="homepulse_sensor",
     seed=settings.FETCHAI_AGENT_SEED + "_sensor",
 )
-sensor_agent.include(ChatProtocol())
 
 
 @sensor_agent.on_event("startup")

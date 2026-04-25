@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from bson import ObjectId
 from uagents import Agent, Context
-from uagents.protocols.chat import ChatProtocol, ChatMessage
+from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service
@@ -19,7 +19,6 @@ monitor_agent = Agent(
     name="homepulse_monitor",
     seed=settings.FETCHAI_AGENT_SEED + "_monitor",
 )
-monitor_agent.include(ChatProtocol())
 
 # In-memory state: collects history + vision results per event_id before reasoning.
 # Safe because uAgents event loop is single-threaded.

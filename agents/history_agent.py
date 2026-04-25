@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from bson import ObjectId
 from uagents import Agent, Context
-from uagents.protocols.chat import ChatProtocol, ChatMessage
+from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from agents.agent_messages import TriageResult, UserHistoryContext, MONITOR_AGENT_ADDRESS
@@ -13,7 +13,6 @@ history_agent = Agent(
     name="homepulse_history",
     seed=settings.FETCHAI_AGENT_SEED + "_history",
 )
-history_agent.include(ChatProtocol())
 
 
 @history_agent.on_event("startup")

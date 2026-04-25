@@ -12,8 +12,8 @@ MONITOR_AGENT_ADDRESS       = "agent1qtl5yptjsv883x23lkt6f73m6888z0npcm2leesc32g
 ESCALATION_AGENT_ADDRESS    = "agent1q23jna0hlra5lrk8pyaf6sryksnrllrvx0mrefyhtl2p793ssd9wq4yv8ds"
 NOTIFICATION_AGENT_ADDRESS  = "agent1qv7awy8whgjc0de3aylfzr2t0y0flh4d54h7yee0lu4fejpj2qyzxgdhkne"
 LEARNING_AGENT_ADDRESS      = "agent1qwqyq0k9t9nk37lt7g4q2qsd8lzv7lju9k2lwzrhl9g5gpzuugckc0kzunc"
-REPORT_AGENT_ADDRESS        = ""
-HEARTBEAT_AGENT_ADDRESS     = ""
+REPORT_AGENT_ADDRESS        = "agent1q2hlgw75yl6l49mx7u7pqej6sdu3jam2lykr7u48dftg2exfzvn2g79ztpv"
+HEARTBEAT_AGENT_ADDRESS     = "agent1qtdma26fxnnfftn6zcntvkv42fah7r8zlz6lh64ns5my4vxzam5gg6anf4x"
 
 
 # ── Message types ────────────────────────────────────────────────────────────

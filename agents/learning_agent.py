@@ -1,6 +1,6 @@
 import logging
 from uagents import Agent, Context
-from uagents.protocols.chat import ChatProtocol, ChatMessage
+from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services.learning_service import refresh_behavioral_schema, adjust_threshold
@@ -11,7 +11,6 @@ learning_agent = Agent(
     name="homepulse_learning",
     seed=settings.FETCHAI_AGENT_SEED + "_learning",
 )
-learning_agent.include(ChatProtocol())
 
 # 24 hours in seconds
 _24H = 60 * 60 * 24
