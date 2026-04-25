@@ -288,3 +288,58 @@ async def answer_dashboard_query(
         events_summary,
         threshold_info,
     )
+
+
+# ── Vision: dynamic object detection ────────────────────────────────────────
+
+# Objects Claude will look for in frame
+_DETECTABLE_OBJECTS = ["stove", "sink", "fridge", "oven", "microwave", "iron", "kettle", "toaster"]
+
+_DETECT_PROMPT = """You are a household object detector for a home safety system.
+Analyze this image and identify the bounding boxes of all visible household appliances.
+
+Look for: stove, sink, fridge, oven, microwave, iron, kettle, toaster, water faucet.
+
+For each object found, return its bounding box as a FRACTION of the image (0.0 to 1.0):
+- x: left edge (fraction of image width)
+- y: top edge (fraction of image height)
+- w: width (fraction of image width)
+- h: height (fraction of image height)
+
+Respond with JSON only, no explanation:
+{
+  "objects": [
+    {"name": "stove", "x": 0.1, "y": 0.4, "w": 0.3, "h": 0.25},
+    {"name": "sink", "x": 0.6, "y": 0.3, "w": 0.2, "h": 0.2}
+  ]
+}
+
+If no relevant objects are visible, return: {"objects": []}"""
+
+
+def _detect_objects_sync(image_b64: str) -> list[dict]:
+    response = _client.messages.create(
+        model=MODEL,
+        max_tokens=400,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": image_b64,
+                    },
+                },
+                {"type": "text", "text": _DETECT_PROMPT},
+            ],
+        }],
+    )
+    result = _parse_json(response.content[0].text)
+    return result.get("objects", [])
+
+
+async def detect_objects_in_frame(image_b64: str) -> list[dict]:
+    """Use Claude vision to detect household objects and return bounding boxes as fractions (0-1)."""
+    return await asyncio.to_thread(_detect_objects_sync, image_b64)

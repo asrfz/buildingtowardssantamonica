@@ -4,7 +4,7 @@ from uagents import Agent, Context
 from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
-from app.services.vision_service import capture_frame, get_zone_for_event
+from app.services.vision_service import capture_frame, get_zone_dynamic_or_fallback
 from app.services.cloudinary_service import upload_and_crop
 from agents.agent_messages import TriageResult, VisionResult, MONITOR_AGENT_ADDRESS
 
@@ -37,9 +37,9 @@ async def capture_and_upload(ctx: Context, sender: str, msg: TriageResult) -> No
         await _send_empty(ctx, msg)
         return
 
-    zone = await get_zone_for_event(msg.user_id, msg.event_type, db)
+    zone = await get_zone_dynamic_or_fallback(frame, msg.user_id, msg.event_type, db)
     if not zone:
-        ctx.logger.warning(f"No zone mapping for {msg.event_type} — sending empty VisionResult")
+        ctx.logger.warning(f"No zone found for {msg.event_type} — sending empty VisionResult")
         await _send_empty(ctx, msg)
         return
 
