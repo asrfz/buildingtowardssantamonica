@@ -57,12 +57,18 @@ def inject_reading(payload: dict) -> None:
 
 def _serial_loop() -> None:
     import serial
+    from serial.serialutil import SerialException
+
     port = settings.ARDUINO_SERIAL_PORT
     baud = settings.ARDUINO_BAUD_RATE
+    permission_logged = False
+
     while True:
+        retry_s = 5
         try:
             with serial.Serial(port, baud, timeout=2) as ser:
-                logger.info(f"Serial connected on {port}")
+                permission_logged = False
+                logger.info("Serial connected on %s @ %s baud", port, baud)
                 while True:
                     line = ser.readline().decode("utf-8", errors="ignore").strip()
                     if not line:
@@ -76,10 +82,39 @@ def _serial_loop() -> None:
                                 pass
                         _reading_queue.put_nowait(payload)
                     except json.JSONDecodeError:
-                        logger.warning(f"Bad serial JSON: {line!r}")
-        except Exception as e:
-            logger.error(f"Serial error ({port}): {e} — retrying in 5s")
-            time.sleep(5)
+                        logger.warning("Bad serial JSON: %r", line)
+        except PermissionError as e:
+            retry_s = 12
+            if not permission_logged:
+                logger.error(
+                    "Serial port %s: access denied. Another program has the port open "
+                    "(often Arduino IDE Serial Monitor, a second HomePulse process, or a serial "
+                    "terminal). Close it so only one reader uses %s. Error: %s",
+                    port,
+                    port,
+                    e,
+                )
+                permission_logged = True
+            else:
+                logger.error(
+                    "Serial port %s still unavailable (PermissionError) — retrying in %ss",
+                    port,
+                    retry_s,
+                )
+        except SerialException as e:
+            logger.exception("Serial device error on %s: %s — retrying in %ss", port, e, retry_s)
+        except OSError as e:
+            logger.exception(
+                "Serial OS error on %s (errno=%s): %s — retrying in %ss",
+                port,
+                getattr(e, "errno", None),
+                e,
+                retry_s,
+            )
+        except Exception:
+            logger.exception("Unexpected serial reader error on %s — retrying in %ss", port, retry_s)
+
+        time.sleep(retry_s)
 
 
 def start_serial_reader() -> None:

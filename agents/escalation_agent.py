@@ -4,7 +4,7 @@ from uagents import Agent, Context
 from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
-from agents.agent_messages import MonitorDecision, EscalationOrder, NOTIFICATION_AGENT_ADDRESS
+from agents.agent_messages import MonitorDecision
 
 logger = logging.getLogger(__name__)
 
@@ -50,28 +50,27 @@ async def escalate(ctx: Context, sender: str, msg: MonitorDecision) -> None:
 
     cancel_window = 0 if msg.severity == "CRITICAL" else settings.CANCEL_WINDOW_SECONDS
 
-    ctx.logger.info(
-        f"Escalating event {msg.event_id} ({msg.severity}) "
-        f"to {len(recipients)} recipient(s), cancel_window={cancel_window}s"
-    )
-
-    if not NOTIFICATION_AGENT_ADDRESS:
-        ctx.logger.warning("NOTIFICATION_AGENT_ADDRESS not set")
+    # Email is last resort: defer Gmail until the user explicitly asks via voice
+    # (voice_input_agent → notification_agent). In-home TTS/UI still fire from monitor_agent.
+    try:
+        await db.events.update_one(
+            {"_id": ObjectId(msg.event_id)},
+            {
+                "$set": {
+                    "status": "awaiting_email_confirmation",
+                    "pending_email_recipients": recipients,
+                    "pending_email_cancel_window_seconds": cancel_window,
+                }
+            },
+        )
+    except Exception as e:
+        ctx.logger.exception(f"Failed to persist pending email state for event {msg.event_id}: {e}")
         return
 
-    await ctx.send(
-        NOTIFICATION_AGENT_ADDRESS,
-        EscalationOrder(
-            event_id=msg.event_id,
-            user_id=msg.user_id,
-            recipients=recipients,
-            severity=msg.severity,
-            recommended_action=msg.recommended_action,
-            cancel_window_seconds=cancel_window,
-            event_type=msg.confirmed_event_type,
-            sensor_payload=msg.sensor_payload,
-            image_url=msg.image_url,
-        ),
+    ctx.logger.info(
+        f"Event {msg.event_id} ({msg.severity}) — in-home alert only; email deferred. "
+        f"Prepared {len(recipients)} recipient(s), cancel_window={cancel_window}s. "
+        f"User can say e.g. 'send a message to get help' after the wake phrase."
     )
 
 

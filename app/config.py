@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     # FetchAI
     FETCHAI_AGENT_SEED: str = "homepulse_default_seed"
     AGENTVERSE_KEY: str = ""
+    # uAgents Bureau HTTP port (default 8002). If busy, run_agents scans a small range.
+    UAGENTS_BUREAU_PORT: int = 8002
 
     # Anthropic Claude API
     ANTHROPIC_API_KEY: str = ""

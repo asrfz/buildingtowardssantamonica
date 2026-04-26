@@ -39,18 +39,23 @@ import httpx
 from datetime import datetime
 from uuid import uuid4
 
+from bson import ObjectId
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from uagents import Agent, Context
 from uagents_core.contrib.protocols.chat import ChatMessage
 
 from app.config import settings
-from app.database import connect_db
+from app.database import connect_db, get_db
 from app.services.wake_word_service import start as start_listener, detected_query_queue
 from app.services.tts_service import speak_async
 from agents.agent_messages import (
-    VoiceQuery, VoiceQueryResponse,
+    VoiceQuery,
+    VoiceQueryResponse,
     DASHBOARD_AGENT_ADDRESS,
+    NOTIFICATION_AGENT_ADDRESS,
+    EscalationOrder,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,102 @@ _pending: dict[str, str] = {}
 
 # FastAPI voice push URL (internal -- localhost only)
 _PUSH_URL = "http://localhost:8000/voice/push"
+
+# Phrases (after wake word) that mean "send the deferred alert email"
+_EXTERNAL_HELP_PHRASES = (
+    "send a message",
+    "send message",
+    "send an email",
+    "send email",
+    "email someone",
+    "notify someone",
+    "get help",
+    "send help",
+    "call for help",
+    "contact someone",
+    "message someone to",
+    "email my",
+    "notify my",
+    "tell someone to fix",
+    "send someone to",
+)
+
+
+def _transcript_requests_external_help(text: str) -> bool:
+    t = text.lower().strip()
+    return any(p in t for p in _EXTERNAL_HELP_PHRASES)
+
+
+async def _try_send_pending_escalation_email(ctx: Context, user_id: str) -> bool:
+    """
+    If there is an event awaiting email confirmation, send EscalationOrder to
+    notification_agent. Returns True if a message was dispatched.
+    """
+    if not user_id or user_id == "unknown":
+        ctx.logger.error("[VoiceInput] DEFAULT_USER_ID missing — cannot send help email")
+        await speak_async("HomePulse is not configured with a user account for alerts.", correction=False)
+        return False
+
+    if not NOTIFICATION_AGENT_ADDRESS:
+        ctx.logger.error("[VoiceInput] NOTIFICATION_AGENT_ADDRESS not set — cannot send email")
+        await speak_async("Notifications are not configured.", correction=False)
+        return False
+
+    db = get_db()
+    try:
+        event = await db.events.find_one(
+            {"user_id": ObjectId(user_id), "status": "awaiting_email_confirmation"},
+            sort=[("detected_at", -1)],
+        )
+    except Exception as e:
+        ctx.logger.exception(f"[VoiceInput] Mongo lookup for pending email failed: {e}")
+        await speak_async("Could not look up pending alerts.", correction=False)
+        return False
+
+    if not event:
+        ctx.logger.warning("[VoiceInput] No event in awaiting_email_confirmation for user")
+        await speak_async(
+            "There is no alert waiting to send by email. Say the wake phrase after an issue is detected.",
+            correction=False,
+        )
+        return False
+
+    recipients = event.get("pending_email_recipients") or []
+    if not recipients:
+        ctx.logger.error(f"[VoiceInput] Event {event['_id']} missing pending_email_recipients")
+        await speak_async("That alert is missing email recipients. Check your account settings.", correction=False)
+        return False
+
+    cancel_window = int(event.get("pending_email_cancel_window_seconds", settings.CANCEL_WINDOW_SECONDS))
+    event_id = str(event["_id"])
+    image_url = (
+        event.get("cropped_image_url")
+        or event.get("raw_image_url")
+        or ""
+    )
+    recommended = event.get("recommended_action") or "Please check your home."
+
+    order = EscalationOrder(
+        event_id=event_id,
+        user_id=user_id,
+        recipients=list(recipients),
+        severity=event.get("severity", "MEDIUM"),
+        recommended_action=recommended,
+        cancel_window_seconds=cancel_window,
+        event_type=event.get("event_type", "UNKNOWN"),
+        sensor_payload=event.get("sensor_payload") or {},
+        image_url=image_url,
+    )
+
+    ctx.logger.info(
+        f"[VoiceInput] User requested external help — emailing event {event_id} "
+        f"({order.event_type}, {order.severity}) → {len(recipients)} recipient(s)"
+    )
+
+    await ctx.send(NOTIFICATION_AGENT_ADDRESS, order)
+    await speak_async("Okay. Sending the notification email now.", correction=False)
+    await _push("answer", "Sending notification email for the latest alert.")
+    return True
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
@@ -98,6 +199,11 @@ async def poll_queries(ctx: Context) -> None:
 
         # Show "heard you" immediately -- don't wait for Claude
         await _push("transcript", question)
+
+        if _transcript_requests_external_help(question):
+            uid = settings.DEFAULT_USER_ID or ""
+            await _try_send_pending_escalation_email(ctx, uid)
+            continue
 
         if not DASHBOARD_AGENT_ADDRESS:
             ctx.logger.warning("DASHBOARD_AGENT_ADDRESS not set -- cannot route query")
@@ -144,7 +250,11 @@ async def _push(msg_type: str, text: str) -> None:
         async with httpx.AsyncClient(timeout=3.0) as client:
             await client.post(_PUSH_URL, json={"type": msg_type, "text": text})
     except Exception as exc:
-        logger.debug(f"[VoiceInput] WebSocket push failed (FastAPI may not be running): {exc}")
+        logger.warning(
+            "[VoiceInput] WebSocket push failed (is uvicorn on :8000?): %s",
+            exc,
+            exc_info=True,
+        )
 
 
 if __name__ == "__main__":

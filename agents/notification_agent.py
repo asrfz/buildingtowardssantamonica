@@ -69,7 +69,11 @@ async def notify(ctx: Context, sender: str, msg: EscalationOrder) -> None:
                     "email_body": email_body,
                     "notification_sent_at": datetime.utcnow(),
                     "status": "notified" if success else "notification_failed",
-                }
+                },
+                "$unset": {
+                    "pending_email_recipients": "",
+                    "pending_email_cancel_window_seconds": "",
+                },
             },
         )
     except Exception as e:
