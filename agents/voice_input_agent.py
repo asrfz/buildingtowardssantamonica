@@ -57,7 +57,7 @@ from app.services.wake_word_service import (
     start as start_listener,
     detected_query_queue,
 )
-from app.services.tts_service import speak_async
+from app.services.tts_service import register_tts_playback_finished, speak_async
 from agents.agent_messages import (
     VoiceQuery,
     VoiceQueryResponse,
@@ -92,6 +92,7 @@ _TOPIC_WORD = re.compile(
     r"profile|account|email|contact|emergency|happened|summary|rundown|"
     r"safe|safety|noise|sound|temperature|recent|today|tonight|yesterday|"
     r"morning|wrong|problem|issue|anything|everything|update|"
+    r"habits?|routines?|pattern|patterns|behavior|behaviour|"
     r"how['']?s|"
     r"how\s+(?:is|are|was|were|many|much|do|does|did|has|have|long|often|about|goes|come)"
     r")\b",
@@ -291,7 +292,6 @@ async def _try_send_pending_escalation_email(ctx: Context, user_id: str) -> bool
     ctx.logger.info("[VoiceInput] EscalationOrder sent to notification_agent — Gmail send runs there")
     await speak_async("Okay. Sending the notification email now.", correction=False)
     await _push("answer", "Sending notification email for the latest alert.")
-    arm_voice_followup_window()
     return True
 
 
@@ -299,6 +299,7 @@ async def _try_send_pending_escalation_email(ctx: Context, user_id: str) -> bool
 
 @voice_input_agent.on_event("startup")
 async def startup(ctx: Context) -> None:
+    register_tts_playback_finished(arm_voice_followup_window)
     await connect_db()
     start_listener()    # starts wake_word_service background thread
     ctx.logger.info(f"voice_input_agent online -- address: {voice_input_agent.address}")
@@ -326,7 +327,6 @@ async def poll_queries(ctx: Context) -> None:
             await _push("transcript", "")
             await _push("answer", VOICE_ASSISTANT_GREETING)
             await speak_async(VOICE_ASSISTANT_GREETING, correction=False)
-            arm_voice_followup_window()
             continue
 
         query_id = str(uuid4())
@@ -349,7 +349,6 @@ async def poll_queries(ctx: Context) -> None:
             )
             await _push("answer", VOICE_NOT_A_QUESTION_REPLY)
             await speak_async(VOICE_NOT_A_QUESTION_REPLY, correction=False)
-            arm_voice_followup_window()
             continue
 
         if not DASHBOARD_AGENT_ADDRESS:
@@ -381,7 +380,6 @@ async def handle_response(ctx: Context, sender: str, msg: VoiceQueryResponse) ->
     ctx.logger.info(f"[VoiceInput] Answer for {msg.query_id[:8]}: {msg.answer[:60]}...")
     await _push("answer", msg.answer)
     await speak_async(msg.answer, correction=False)
-    arm_voice_followup_window()
 
 
 # ── ASI:One passthrough ───────────────────────────────────────────────────────
@@ -396,7 +394,7 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
 async def _push(msg_type: str, text: str) -> None:
     """POST a message to the FastAPI WebSocket push endpoint."""
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=5.0)) as client:
             await client.post(_voice_push_url(), json={"type": msg_type, "text": text})
     except Exception as exc:
         logger.warning(

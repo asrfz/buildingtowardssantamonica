@@ -417,6 +417,8 @@ Primary resident / monitoring context: {user_name}
 How to answer:
 - Default to SHORT answers: one to three sentences. No long unsolicited recaps.
 - If the USER QUESTION is casual (greeting, filler, "I'm here", small talk) and does NOT ask about home, monitoring, profile, or incidents: reply in ONE short sentence offering help. Do NOT mention EVENTS, sensor activity, "this morning", or past alerts at all.
+- Questions about habits, routines, or behavioral patterns: use BEHAVIORAL SCHEMA only; two or three short sentences. Do NOT dump today's EVENTS or a morning incident recap unless they explicitly asked what happened today or for a report of alerts.
+- "Give me a report" / "any report" without a time window: one tight paragraph at most — headline only, not a full timeline.
 - Give a fuller summary (up to about six sentences) only when the user clearly asks what happened, for a recap, status overview, "this morning", "tell me everything", or similar.
 - NEVER volunteer phrases like "Would you like a quick rundown?", "want me to go through", or similar unless they explicitly asked for a summary, rundown, or details.
 - Questions about "my profile", "my account", "who is on file", emergency contacts, or their email: use USER PROFILE. If a field is missing or empty, say so briefly.
@@ -432,7 +434,7 @@ Rules on sensor / heartbeat wording:
 
     response = _client.messages.create(
         model=MODEL,
-        max_tokens=450,
+        max_tokens=320,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text.strip()

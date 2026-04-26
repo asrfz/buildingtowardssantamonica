@@ -35,8 +35,9 @@ _GLOBAL_DEFAULTS = {
     "sound_level": {
         "sleep_max":       200,
         "activity_min":    220,
-        "alert_high":      700,
-        "multiplier":      2.8,
+        "alert_high":      850,
+        # Higher σ multiplier = need a sharper spike vs baseline (noisy demos / open rooms).
+        "multiplier":      4.0,
     },
     "light_level": {
         "lights_off_max":  150,

@@ -38,7 +38,8 @@ import queue
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from app.config import settings
 
@@ -69,6 +70,22 @@ _tts_speaking = threading.Event()
 _stt_suppress_until: float = 0.0
 # Seconds after playback ends before listening resumes (tune if mic still picks up tail).
 TTS_STT_TAIL_COOLDOWN_SEC = 0.95
+
+_playback_finished_hooks: list[Callable[[], None]] = []
+
+
+def register_tts_playback_finished(cb: Callable[[], None]) -> None:
+    """Call `cb` on the TTS worker thread after each clip finishes (after tail cooldown is armed)."""
+    if cb not in _playback_finished_hooks:
+        _playback_finished_hooks.append(cb)
+
+
+def _invoke_playback_finished_hooks() -> None:
+    for cb in _playback_finished_hooks:
+        try:
+            cb()
+        except Exception:
+            logger.debug("[TTS] playback-finished hook failed", exc_info=True)
 
 
 def should_suppress_voice_capture() -> bool:
@@ -113,6 +130,7 @@ def _tts_worker() -> None:
             if req is None:
                 break
             logger.info(f"[TTS] (no API key) would speak: {req.text[:120]}")
+            _invoke_playback_finished_hooks()
             _queue.task_done()
         return
 
@@ -168,6 +186,7 @@ def _tts_worker() -> None:
         finally:
             _tts_speaking.clear()
             _stt_suppress_until = time.monotonic() + TTS_STT_TAIL_COOLDOWN_SEC
+            _invoke_playback_finished_hooks()
             _queue.task_done()
 
 

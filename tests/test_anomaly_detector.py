@@ -53,8 +53,8 @@ class TestNormalReadings:
         assert result.triggered is False
 
     async def test_borderline_sound_does_not_trigger(self, mock_db):
-        """Sound 324 is just below the 325 threshold (200 + 2.5×50)."""
-        payload = _make_payload({"temperature_c": 22.0, "sound_level": 324})
+        """Sound 399 is just below cutoff (|Δ| ≤ 4.0×σ → 200 + 4.0×50 = 400)."""
+        payload = _make_payload({"temperature_c": 22.0, "sound_level": 399})
         result = await score_reading(DEMO_USER_ID, payload, mock_db)
         assert result.triggered is False
 

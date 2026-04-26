@@ -37,7 +37,7 @@ async def seed() -> None:
     # ── 2. Seed baselines for all 24 hours × 2 day types ────────────────────
     # Tight std_devs make demo triggers easy to produce:
     #   - Any temp above 25.75°C (= 22 + 2.5×1.5) will fire
-    #   - Any sound above 325 (= 200 + 2.5×50) will fire
+    #   - Any sound above 400 (= 200 + default 4.0×50) will fire z-score path
     baseline_docs = []
     for hour in range(24):
         for day_type in ("weekday", "weekend"):

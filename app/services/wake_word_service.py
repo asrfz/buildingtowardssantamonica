@@ -63,13 +63,13 @@ WAKE_WORDS = [
 
 # Scribe often hears "pulse" as posts / hosts / pul… — match without making the user re-say it 5 times.
 _WAKE_FUZZY = (
-    # hey|hi|hello|ok|yo + home + (pulse | common corruptions)
-    r"^(?:hey|hi|hello|ok|yo)[,\s]+home\s+(?:pulse|posts?|pul\w{0,4}|host\w{0,3})\b",
+    # hey|hi|hello|ok|yo + home + (pulse | post(s) | Scribe corruptions)
+    r"^(?:hey|hi|hello|ok|yo)[,\s]+home\s+(?:pulse|post|posts|pul\w{0,4}|host\w{0,3})\b",
     r"^(?:hey|hi|hello|ok|yo)[,\s]+homepulse\b",
     # "hey, pulse" / "hi pulse" (drops "home")
-    r"^(?:hey|hi|hello|ok|yo)[,\s]+(?:home\s+)?(?:pulse|posts?)\b",
-    # Just "home pulse" / "home posts" (two words)
-    r"^home\s+(?:pulse|posts?|pul\w{0,4}|host\w{0,3})\b",
+    r"^(?:hey|hi|hello|ok|yo)[,\s]+(?:home\s+)?(?:pulse|post|posts)\b",
+    # Just "home pulse" / "home post" (two words)
+    r"^home\s+(?:pulse|post|posts|pul\w{0,4}|host\w{0,3})\b",
     r"^homepulse\b",
 )
 _WAKE_FUZZY_COMPILED = [re.compile(p, re.I) for p in _WAKE_FUZZY]
@@ -83,6 +83,15 @@ def _normalize_for_wake(s: str) -> str:
     """Lowercase, drop commas/semicolons, collapse whitespace — matches STT variants."""
     x = s.lower().strip()
     x = re.sub(r"[,;]", " ", x)
+    # "Hey, home post. What are …" in one utterance — merge clause break so wake regex sees one phrase.
+    x = re.sub(
+        r"\.\s+(?=(?:what|who|when|where|why|how|give|tell|show|list|can|could|would|should|"
+        r"is|are|was|were|do|does|did|have|has|please|send|any|i\b|my|the|a\b|some|"
+        r"um\b|uh\b)\b)",
+        " ",
+        x,
+        flags=re.I,
+    )
     x = re.sub(r"\s+", " ", x).strip()
     # Scribe often ends short phrases with "." — don't treat that as a follow-up "question"
     x = re.sub(r"[.?!…]+$", "", x).strip()

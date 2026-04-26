@@ -67,8 +67,8 @@ async def seed_user_thresholds(db, user_id: ObjectId):
         "sound_level": {
             "sleep_max":   160,        # Very quiet at night (quiet neighborhood)
             "activity_min": 230,
-            "alert_high":  650,
-            "multiplier":  2.8,
+            "alert_high":  820,
+            "multiplier":  4.0,
         },
         "light_level": {
             "lights_off_max": 120,     # Her bulbs are bright — <120 means lights OFF
@@ -96,8 +96,8 @@ async def seed_user_thresholds(db, user_id: ObjectId):
         "sound_level": {
             "sleep_max":   240,        # Lives on a busier street
             "activity_min": 310,
-            "alert_high":  750,
-            "multiplier":  3.0,
+            "alert_high":  880,
+            "multiplier":  4.2,
         },
         "light_level": {
             "lights_off_max": 210,     # Dim bulbs — 200 means lights ON for User B

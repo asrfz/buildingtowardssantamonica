@@ -12,7 +12,8 @@ float soundLevel = 0;
 const int LIGHT_CHANGE_THRESHOLD = 180;   // detect big on/off jump
 const float ACCEL_THRESHOLD = 1.2;        // was 1.8
 const float GYRO_THRESHOLD = 120.0;       // was 220
-const float SOUND_THRESHOLD = 300.0;      // was 1000+
+// Louder than typical room / hackathon demo chatter before flagging (Arduino edge trigger).
+const float SOUND_THRESHOLD = 520.0;      // was 300; original firmware used 1000+
 const float MAGNETIC_THRESHOLD = 60.0;    // was 120
 
 unsigned long lastEventTime = 0;
