@@ -47,6 +47,7 @@ from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db
 from app.services.wake_word_service import start as start_listener, detected_query_queue
+from app.services.tts_service import speak_async
 from agents.agent_messages import (
     VoiceQuery, VoiceQueryResponse,
     DASHBOARD_AGENT_ADDRESS,
@@ -125,6 +126,7 @@ async def handle_response(ctx: Context, sender: str, msg: VoiceQueryResponse) ->
     transcript = _pending.pop(msg.query_id, msg.transcript)
     ctx.logger.info(f"[VoiceInput] Answer for {msg.query_id[:8]}: {msg.answer[:60]}...")
     await _push("answer", msg.answer)
+    await speak_async(msg.answer, correction=False)
 
 
 # ── ASI:One passthrough ───────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { CloudinaryPlayground } from './components/CloudinaryPlayground'
 import { apiBase, apiJson } from './lib/api'
 import { PRESETS, basePayload } from './lib/payloads'
@@ -6,6 +6,22 @@ import { PRESETS, basePayload } from './lib/payloads'
 const USER_STORAGE = 'homepulse_dev_user_id'
 
 type Tab = 'console' | 'media'
+
+type LiveAlert = {
+  id: string
+  label: string
+  severity: string
+  recommended_action: string
+  image_url?: string
+  time: string
+}
+
+const SEV_COLORS: Record<string, { border: string; bg: string; badge: string; text: string }> = {
+  LOW:      { border: '#f59e0b', bg: '#fffbeb', badge: '#fef3c7', text: '#92400e' },
+  MEDIUM:   { border: '#f97316', bg: '#fff7ed', badge: '#fed7aa', text: '#7c2d12' },
+  HIGH:     { border: '#ef4444', bg: '#fef2f2', badge: '#fee2e2', text: '#7f1d1d' },
+  CRITICAL: { border: '#dc2626', bg: '#fef2f2', badge: '#fca5a5', text: '#450a0a' },
+}
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('console')
@@ -16,10 +32,48 @@ export default function App() {
   const [lastJson, setLastJson] = useState<string>('')
   const [busy, setBusy] = useState(false)
   const [wsLines, setWsLines] = useState<string[]>([])
+  const [alerts, setAlerts] = useState<LiveAlert[]>([])
+  const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
     localStorage.setItem(USER_STORAGE, userId)
   }, [userId])
+
+  // Auto-connect WebSocket for live alert feed
+  useEffect(() => {
+    const base = apiBase().replace(/^http/, 'ws')
+    const url = `${base}/voice/ws`
+
+    const connect = () => {
+      const ws = new WebSocket(url)
+      wsRef.current = ws
+
+      ws.onmessage = (ev) => {
+        setWsLines((prev) => [...prev.slice(-40), ev.data])
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.type === 'alert' && msg.data) {
+            setAlerts((prev) => [
+              {
+                id: `${Date.now()}`,
+                label: msg.data.label || msg.data.event_type || 'Alert',
+                severity: (msg.data.severity || 'MEDIUM').toUpperCase(),
+                recommended_action: msg.data.recommended_action || msg.text || '',
+                image_url: msg.data.image_url || undefined,
+                time: new Date().toLocaleTimeString(),
+              },
+              ...prev,
+            ].slice(0, 5))
+          }
+        } catch {}
+      }
+      ws.onclose = () => setTimeout(connect, 2000)
+      ws.onerror = () => ws.close()
+    }
+
+    connect()
+    return () => { wsRef.current?.close() }
+  }, [])
 
   const pushLog = useCallback((line: string) => {
     setLog((prev) => [...prev.slice(-80), `[${new Date().toLocaleTimeString()}] ${line}`])
@@ -95,22 +149,6 @@ export default function App() {
     })
   }
 
-  const connectVoiceWs = () => {
-    const base = apiBase().replace(/^http/, 'ws')
-    const url = `${base}/voice/ws`
-    pushLog(`WebSocket → ${url}`)
-    try {
-      const ws = new WebSocket(url)
-      ws.onmessage = (ev) => {
-        setWsLines((prev) => [...prev.slice(-40), ev.data])
-      }
-      ws.onerror = () => pushLog('Voice WS error')
-      ws.onclose = () => pushLog('Voice WS closed')
-    } catch (e) {
-      pushLog(String(e))
-    }
-  }
-
   return (
     <div className="layout">
       <header className="top">
@@ -134,6 +172,42 @@ export default function App() {
 
       {tab === 'console' && (
         <>
+          {alerts.length > 0 && (
+            <section className="card" style={{ marginTop: 14 }}>
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#ef4444', display: 'inline-block', animation: 'pulse 1.5s infinite' }} />
+                Live Alerts
+              </h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {alerts.map((alert) => {
+                  const c = SEV_COLORS[alert.severity] ?? SEV_COLORS.MEDIUM
+                  return (
+                    <div key={alert.id} style={{ borderLeft: `4px solid ${c.border}`, background: c.bg, borderRadius: 8, padding: '12px 14px', position: 'relative' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <span style={{ background: c.badge, color: c.text, fontSize: '0.65rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, letterSpacing: '0.08em' }}>
+                          {alert.severity}
+                        </span>
+                        <strong style={{ flex: 1 }}>{alert.label}</strong>
+                        <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{alert.time}</span>
+                        <button
+                          type="button"
+                          onClick={() => setAlerts((p) => p.filter((a) => a.id !== alert.id))}
+                          style={{ background: 'transparent', color: '#94a3b8', padding: '0 4px', fontSize: '1rem', lineHeight: 1 }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '0.875rem', color: '#475569' }}>{alert.recommended_action}</p>
+                      {alert.image_url && (
+                        <img src={alert.image_url} alt={alert.label} style={{ marginTop: 8, maxWidth: '100%', maxHeight: 160, borderRadius: 6, objectFit: 'cover' }} />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+          )}
+
           <section className="card">
             <h2>Connection</h2>
             <label className="row">
@@ -239,11 +313,8 @@ export default function App() {
           </section>
 
           <section className="card">
-            <h2>Voice WebSocket</h2>
-            <p className="hint">Streams overlay messages when something pushes to <code>/voice/ws</code>.</p>
-            <button type="button" onClick={connectVoiceWs}>
-              Connect /voice/ws
-            </button>
+            <h2>Voice WebSocket <span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#22c55e', marginLeft: 6 }}>● auto-connected</span></h2>
+            <p className="hint">Live feed from <code>/voice/ws</code> — alert cards appear above when events are detected.</p>
             {wsLines.length > 0 && (
               <pre className="out small">{wsLines.join('\n')}</pre>
             )}

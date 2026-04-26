@@ -7,6 +7,7 @@ from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service, gmail_service
 from app.services.incident_service import create_incident_report
+from app.utils.event_labels import label_for_event_type
 from agents.agent_messages import EscalationOrder
 
 logger = logging.getLogger(__name__)
@@ -54,10 +55,7 @@ async def notify(ctx: Context, sender: str, msg: EscalationOrder) -> None:
         ctx.logger.error(f"Claude email write failed: {e}")
         return
 
-    subject = (
-        f"[HomePulse {msg.severity}] "
-        f"{msg.event_type.replace('_', ' ').title()} detected"
-    )
+    subject = f"[HomePulse {msg.severity}] {label_for_event_type(msg.event_type)}"
 
     success = gmail_service._send(msg.recipients, subject, email_body)
 

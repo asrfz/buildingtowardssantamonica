@@ -69,7 +69,7 @@ def _extract_query(transcript: str) -> str | None:
     for wake in WAKE_WORDS:
         if lower.startswith(wake):
             question = transcript[len(wake):].strip().lstrip(",. ")
-            return question if question else None
+            return question if question else "What is happening at home right now?"
     return None
 
 

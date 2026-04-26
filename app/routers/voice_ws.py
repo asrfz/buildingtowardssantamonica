@@ -69,15 +69,19 @@ async def voice_websocket(websocket: WebSocket) -> None:
 class PushPayload(BaseModel):
     type: str
     text: str = ""
+    data: dict = {}
 
 
 @router.post("/push")
 async def push_to_clients(payload: PushPayload) -> dict:
     """
-    voice_input_agent POSTs here to broadcast a message to all browser clients.
-    Not exposed to the internet -- runs on localhost:8000 only.
+    Broadcast a message to all browser WebSocket clients.
+    Not exposed to the internet — localhost:8000 only.
     """
-    await _broadcast({"type": payload.type, "text": payload.text})
+    msg: dict = {"type": payload.type, "text": payload.text}
+    if payload.data:
+        msg["data"] = payload.data
+    await _broadcast(msg)
     return {"clients_notified": len(_clients)}
 
 
@@ -228,6 +232,64 @@ _HTML = """<!DOCTYPE html>
       font-size: 0.9rem;
       color: #e07070;
     }
+
+    .card.alert {
+      border-left: 4px solid #f97316;
+      padding: 14px 18px;
+      position: relative;
+    }
+
+    .card.alert.low      { border-color: #f59e0b; background: #1a1400; }
+    .card.alert.medium   { border-color: #f97316; background: #1a0d00; }
+    .card.alert.high     { border-color: #ef4444; background: #1a0000; }
+    .card.alert.critical { border-color: #dc2626; background: #100000; animation: urgentPulse 1s infinite; }
+
+    @keyframes urgentPulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); }
+      50%       { box-shadow: 0 0 12px 2px rgba(220,38,38,0.4); }
+    }
+
+    .alert-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .sev-badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .sev-badge.low      { background: #78350f; color: #fef3c7; }
+    .sev-badge.medium   { background: #7c2d12; color: #fed7aa; }
+    .sev-badge.high     { background: #7f1d1d; color: #fee2e2; }
+    .sev-badge.critical { background: #450a0a; color: #fca5a5; }
+
+    .alert-label {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #f0f0f0;
+      flex: 1;
+    }
+
+    .alert-action {
+      font-size: 0.875rem;
+      color: #bbb;
+      margin: 0;
+    }
+
+    .alert-img {
+      margin-top: 10px;
+      max-width: 100%;
+      max-height: 180px;
+      border-radius: 8px;
+      object-fit: cover;
+    }
   </style>
 </head>
 <body>
@@ -258,10 +320,46 @@ _HTML = """<!DOCTYPE html>
       const card = document.createElement('div');
       card.className = `card ${type}`;
       card.textContent = text;
-      feed.prepend(card);          // newest on top
-      if (feed.children.length > 20) {
-        feed.removeChild(feed.lastChild);
+      feed.prepend(card);
+      if (feed.children.length > 20) feed.removeChild(feed.lastChild);
+    }
+
+    function addAlertCard(label, sev, action, imageUrl) {
+      const card = document.createElement('div');
+      card.className = `card alert ${sev}`;
+
+      const header = document.createElement('div');
+      header.className = 'alert-header';
+
+      const badge = document.createElement('span');
+      badge.className = `sev-badge ${sev}`;
+      badge.textContent = sev.toUpperCase();
+
+      const title = document.createElement('span');
+      title.className = 'alert-label';
+      title.textContent = label;
+
+      header.appendChild(badge);
+      header.appendChild(title);
+      card.appendChild(header);
+
+      if (action) {
+        const p = document.createElement('p');
+        p.className = 'alert-action';
+        p.textContent = action;
+        card.appendChild(p);
       }
+
+      if (imageUrl) {
+        const img = document.createElement('img');
+        img.className = 'alert-img';
+        img.src = imageUrl;
+        img.alt = label;
+        card.appendChild(img);
+      }
+
+      feed.prepend(card);
+      if (feed.children.length > 20) feed.removeChild(feed.lastChild);
     }
 
     function setStatus(text, pulsing) {
@@ -291,6 +389,10 @@ _HTML = """<!DOCTYPE html>
         } else if (msg.type === 'error') {
           setStatus('Error -- try again', false);
           addCard('error', msg.text);
+        } else if (msg.type === 'alert') {
+          const d = msg.data || {};
+          const sev = (d.severity || 'MEDIUM').toLowerCase();
+          addAlertCard(d.label || msg.text, sev, d.recommended_action || '', d.image_url || '');
         }
       };
 

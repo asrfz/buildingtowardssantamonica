@@ -71,7 +71,7 @@ def transcribe_sync(wav_bytes: bytes) -> str:
             timestamps_granularity="none",  # skip word timestamps -- faster
         )
         transcript = (result.text or "").strip()
-        logger.info(f"[STT] Scribe transcript: {transcript!r}")
+        logger.debug(f"[STT] Scribe transcript: {transcript!r}")
         return transcript
 
     except Exception as exc:

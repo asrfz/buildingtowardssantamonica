@@ -1,4 +1,5 @@
 import logging
+import httpx
 from datetime import datetime
 from bson import ObjectId
 from uagents import Agent, Context
@@ -6,6 +7,7 @@ from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service
+from app.services.tts_service import speak_async
 from app.utils.event_labels import label_for_event_type
 from agents.agent_messages import (
     UserHistoryContext,
@@ -108,6 +110,30 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
         )
     except Exception as e:
         ctx.logger.error(f"Failed to update event {event_id}: {e}")
+
+    # Speak the alert and push to frontend WebSocket clients
+    event_label = label_for_event_type(confirmed_type)
+    alert_text = f"{event_label}. {recommended_action}"
+    try:
+        await speak_async(alert_text, correction=False)
+    except Exception as e:
+        ctx.logger.debug(f"TTS speak failed: {e}")
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post("http://localhost:8000/voice/push", json={
+                "type": "alert",
+                "text": alert_text,
+                "data": {
+                    "event_id": event_id,
+                    "event_type": confirmed_type,
+                    "label": event_label,
+                    "severity": severity,
+                    "recommended_action": recommended_action,
+                    "image_url": vision.cropped_url or vision.raw_url or "",
+                },
+            })
+    except Exception as e:
+        ctx.logger.debug(f"WebSocket alert push failed (FastAPI may not be running): {e}")
 
     if not ESCALATION_AGENT_ADDRESS:
         ctx.logger.warning("ESCALATION_AGENT_ADDRESS not set")

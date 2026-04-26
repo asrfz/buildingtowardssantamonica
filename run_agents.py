@@ -22,9 +22,14 @@ Agent pipeline overview:
     report_agent     — 7-day weekly digest email
     dashboard_agent  — ASI:One chat gateway (Agentverse mailbox)
 """
+import logging
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Suppress noisy third-party HTTP logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from uagents import Bureau
 
