@@ -490,9 +490,10 @@ export default function HomePulseDashboard() {
   const conf = confFromDeviation(selected?.deviation_score)
   const riskLabel = selected?.severity ? selected.severity.toUpperCase() : '—'
   const hasLiveCrop = Boolean(rawUrl && zone)
-  const demoLayout = !hasLiveCrop
-  const displayConf = conf ?? (demoLayout ? '94.7%' : null)
-  const displayRisk = riskLabel !== '—' ? riskLabel : demoLayout ? 'HIGH' : '—'
+  /** Main hero matches sidebar: no fake “hazard” when nothing is selected. */
+  const idleMain = !selected
+  const displayConf = conf
+  const displayRisk = riskLabel
 
   const notifyTitle = selected
     ? `${(selected.event_label || selected.event_type.replace(/_/g, ' ')).replace(/^\w/, (c) => c.toUpperCase())} detected nearby`
@@ -514,7 +515,7 @@ export default function HomePulseDashboard() {
     return lines.length > 1 ? lines.slice(1, 4) : DEFAULT_VOICE_STEPS
   })()
 
-  const demoHazardText = selected ? hazardPillLabel(selected) : 'POWER CORD - TRIP HAZARD'
+  const demoHazardText = selected ? hazardPillLabel(selected) : ''
   const feedClock = selected?.detected_at
     ? formatFeedClock(selected.detected_at)
     : formatFeedClock(new Date(nowTick).toISOString())
@@ -691,17 +692,49 @@ export default function HomePulseDashboard() {
           </div>
         ) : null}
 
-        <div className={`hp-feed-stage ${sensorPulse ? 'hp-feed-stage--pulse' : ''}`}>
-          <div className="hp-status-float hp-status-float--mock" aria-live="polite">
-            <div className="hp-status-line">
-              <span className="hp-status-dot" />
-              <strong>HAZARD DETECTED</strong>
+        <div
+          className={`hp-feed-stage ${sensorPulse ? 'hp-feed-stage--pulse' : ''} ${idleMain ? 'hp-feed-stage--idle' : ''}`}
+        >
+          {idleMain ? (
+            <div className="hp-status-float hp-status-float--clear" aria-live="polite">
+              <div className="hp-status-line">
+                <span className="hp-status-dot hp-status-dot--calm" />
+                <strong>MONITORING</strong>
+              </div>
+              <div className="hp-status-metric">No active alert — same status as the panel on the left.</div>
             </div>
-            {displayConf ? <div className="hp-status-metric">CONF: {displayConf}</div> : null}
-            <div className="hp-status-metric">RISK: {displayRisk}</div>
-          </div>
+          ) : (
+            <div className="hp-status-float hp-status-float--mock" aria-live="polite">
+              <div className="hp-status-line">
+                <span className="hp-status-dot" />
+                <strong>HAZARD DETECTED</strong>
+              </div>
+              {displayConf ? <div className="hp-status-metric">CONF: {displayConf}</div> : null}
+              <div className="hp-status-metric">RISK: {displayRisk}</div>
+            </div>
+          )}
 
-          {hasLiveCrop ? (
+          {idleMain ? (
+            <div className="hp-idle-feed">
+              <div className="hp-notify-card hp-idle-feed-hero">
+                <div className="hp-notify-head">
+                  <span className="hp-notify-icon" aria-hidden>
+                    i
+                  </span>
+                  <div className="hp-notify-title">{notifyTitle}</div>
+                </div>
+                <p className="hp-notify-body">{notifyDescription}</p>
+                <div className="hp-notify-meta">
+                  <span className="hp-notify-pill">Living room area</span>
+                  <span className="hp-notify-time">{loading ? 'Loading…' : 'Standby'}</span>
+                </div>
+              </div>
+              <p className="hp-idle-feed-sub">
+                When the pipeline saves a frame, the enhanced feed and crop appear here automatically — no mock hazard
+                overlay unless you open a real alert below.
+              </p>
+            </div>
+          ) : hasLiveCrop ? (
             <div className="hp-zoom-bar">
               <span className="hp-zoom-label">Zoom (focus on box)</span>
               <button type="button" className="hp-btn hp-btn-dark" onClick={() => setZoom((z) => Math.max(1, Math.round((z - 0.25) * 100) / 100))}>
@@ -729,9 +762,9 @@ export default function HomePulseDashboard() {
               <p className="hp-feed-caption">Photo from this alert — crop box appears when vision saves coordinates.</p>
               <img src={rawUrl} alt="" className="hp-fallback-img" />
             </>
-          ) : (
-            <DemoHazardFeed hazardLabel={demoHazardText} />
-          )}
+          ) : selected ? (
+            <DemoHazardFeed hazardLabel={demoHazardText || 'ALERT'} />
+          ) : null}
 
           <div className="hp-feed-clock">{feedClock}</div>
         </div>

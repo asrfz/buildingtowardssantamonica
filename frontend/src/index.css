@@ -677,6 +677,59 @@ button.prompt-chip {
   min-height: 120px;
 }
 
+/* Idle / all-clear — match sidebar calm template, not red hazard mock */
+.hp-feed-stage--idle {
+  border-color: #64748b;
+  background: linear-gradient(165deg, #161b22 0%, #0f1419 50%, #12151c 100%);
+  box-shadow:
+    0 0 0 1px rgb(100 116 139 / 20%),
+    0 10px 32px rgb(0 0 0 / 35%);
+}
+
+.hp-status-float--clear {
+  border: 1px solid rgb(34 197 94 / 45%);
+  background: rgb(15 23 42 / 92%);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 25%);
+}
+
+.hp-status-float--clear .hp-status-metric {
+  color: #94a3b8;
+  font-weight: 500;
+  max-width: 16rem;
+}
+
+.hp-status-dot--calm {
+  background: #22c55e;
+  box-shadow: 0 0 8px rgb(34 197 94 / 55%);
+  animation: none;
+}
+
+.hp-idle-feed {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: min(52vh, 420px);
+  padding: 28px 20px 40px;
+}
+
+.hp-idle-feed-hero {
+  width: 100%;
+  max-width: 420px;
+  margin: 0;
+}
+
+.hp-idle-feed-sub {
+  margin: 18px 0 0;
+  max-width: 420px;
+  text-align: center;
+  font-size: 0.84rem;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
 .hp-status-float {
   position: absolute;
   top: 18px;
