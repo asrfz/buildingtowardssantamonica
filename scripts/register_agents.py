@@ -17,6 +17,8 @@ from app.config import settings
 
 AGENTS = [
     ("dashboard",     "_dashboard"),   # user-facing ASI:One gateway — register this first
+    ("voice",         "_voice"),      # TTS + spatial guidance (must match agents/voice_agent.py)
+    ("voice_input",   "_voice_input"),  # STT → dashboard (must match agents/voice_input_agent.py)
     ("sensor",        "_sensor"),
     ("triage",        "_triage"),
     ("history",       "_history"),
@@ -35,4 +37,7 @@ for name, suffix in AGENTS:
     const_name = f"{name.upper()}_AGENT_ADDRESS"
     print(f'{const_name:<30} = "{a.address}"')
 print()
-print("# Register homepulse_dashboard on Agentverse first — it's the ASI:One entry point.")
+print("# Paste DASHBOARD_AGENT_ADDRESS into agents/agent_messages.py line for DASHBOARD_AGENT_ADDRESS")
+print("#   (voice_input_agent sends VoiceQuery there). Paste VOICE_INPUT_AGENT_ADDRESS so")
+print("#   dashboard_agent can reply to voice_input.")
+print("# Register the dashboard agent on Agentverse first (ASI:One entry point).")

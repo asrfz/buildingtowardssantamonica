@@ -1,7 +1,10 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
 :root {
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-family: 'DM Sans', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   color: #0f172a;
-  background: #f8fafc;
+  background: #e8eef7;
+  line-height: 1.45;
 }
 
 * {
@@ -12,43 +15,152 @@ body {
   margin: 0;
 }
 
+code,
+.mono,
+.out {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
 #root {
   min-height: 100vh;
 }
 
-.page {
-  max-width: 860px;
+.layout {
+  max-width: 960px;
   margin: 0 auto;
-  padding: 32px 20px;
+  padding: 24px 18px 48px;
 }
 
-.subtitle {
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.sub {
+  margin: 6px 0 0;
   color: #475569;
-  margin-top: 4px;
+  font-size: 0.9rem;
+  max-width: 640px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tabs button {
+  margin: 0;
+  background: #fff;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+}
+
+.tabs button.active {
+  background: #0d9488;
+  color: #fff;
+  border-color: #0d9488;
 }
 
 .card {
   background: #fff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #cbd5e1;
   border-radius: 12px;
-  padding: 16px;
-  margin-top: 16px;
+  padding: 16px 18px;
+  margin-top: 14px;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 6%);
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+}
+
+.hint {
+  margin: 0 0 12px;
+  color: #64748b;
+  font-size: 0.88rem;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.row span {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+input[type='text'],
+textarea.wide {
+  width: 100%;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+}
+
+textarea.wide {
+  resize: vertical;
+  margin-bottom: 10px;
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.btn-row.wrap {
+  margin-bottom: 12px;
 }
 
 button {
-  margin-top: 10px;
   border: 0;
   border-radius: 8px;
-  padding: 10px 14px;
+  padding: 9px 14px;
   font-weight: 600;
-  background: #2563eb;
+  background: #0f766e;
   color: #fff;
   cursor: pointer;
+  font-family: inherit;
 }
 
 button:disabled {
   background: #94a3b8;
   cursor: not-allowed;
+}
+
+.link-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 14px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: #0f172a;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border: 1px solid #cbd5e1;
+}
+
+.link-btn:hover {
+  background: #e2e8f0;
 }
 
 .warn {
@@ -58,4 +170,101 @@ button:disabled {
 
 .muted {
   color: #64748b;
+}
+
+.out {
+  margin: 10px 0 0;
+  padding: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 360px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.out.small {
+  max-height: 200px;
+}
+
+.preview {
+  margin-top: 16px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.preview img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Cloudinary Starter Kit–style playground */
+.cld-playground .cld-checklist {
+  margin: 0 0 12px;
+  padding-left: 1.2rem;
+  color: #334155;
+}
+
+.warn-inline {
+  color: #c2410c;
+  font-weight: 600;
+}
+
+.cld-pid {
+  margin: 12px 0 0;
+  word-break: break-all;
+}
+
+.cld-url {
+  margin-top: 8px;
+}
+
+.cld-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.cld-grid figure {
+  margin: 0;
+}
+
+.cld-grid figcaption {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 8px;
+}
+
+.cld-prompts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cld-prompts li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+  font-size: 0.88rem;
+  color: #334155;
+}
+
+button.prompt-chip {
+  flex-shrink: 0;
+  margin: 0;
+  background: #1e3a5f;
+  font-size: 0.75rem;
+  padding: 6px 10px;
+}
+
+.ok-msg {
+  color: #0f766e;
+  font-weight: 600;
+  margin: 8px 0 0;
+  font-size: 0.9rem;
 }
