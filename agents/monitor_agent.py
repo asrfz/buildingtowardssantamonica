@@ -66,7 +66,10 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
     hour = now.hour
     day_type = "weekend" if now.weekday() >= 5 else "weekday"
 
-    has_frame = bool(vision.cropped_url and vision.cropped_url.strip())
+    has_frame = bool(
+        (vision.cropped_url and vision.cropped_url.strip())
+        or (vision.raw_url and vision.raw_url.strip())
+    )
     ctx.logger.info(
         f"[4/5] MONITOR  both results in for event {event_id[:8]} — calling Claude reasoning "
         f"(image={'yes' if has_frame else 'no'}, triage_type={history.triage_event_type})"
@@ -82,6 +85,7 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
             hour=hour,
             day_type=day_type,
             triage_event_type=history.triage_event_type,
+            crop_spatially_trusted=getattr(vision, "spatial_crop_trusted", True),
         )
     except Exception as e:
         ctx.logger.error(f"Claude reasoning failed for event {event_id}: {e}")
@@ -91,6 +95,16 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
     severity = decision.get("severity", "MEDIUM")
     recommended_action = decision.get("recommended_action", "Please check your home.")
     suggested_service = decision.get("suggested_service", "none")
+
+    # No Cloudinary frame — keep the triage classification so door/movement isn't relabeled as "sound" in the UI/email.
+    if not has_frame and history.triage_event_type:
+        if confirmed_type != history.triage_event_type:
+            ctx.logger.info(
+                "[4/5] MONITOR  no image — label locked to triage %s (model had %s)",
+                history.triage_event_type,
+                confirmed_type,
+            )
+        confirmed_type = history.triage_event_type
 
     ctx.logger.info(
         f"[4/5] MONITOR  {confirmed_type} ({severity}) — {recommended_action[:80]}"

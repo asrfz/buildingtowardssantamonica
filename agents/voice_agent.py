@@ -7,19 +7,15 @@ Two-phase operation:
         Speaks a directional alert as soon as an object anomaly is confirmed.
 
     Phase 2 — Progressive correction loop (interval-driven, 3s per tick):
-        For each active event, requests a fresh frame from the browser
-        (same path as vision_agent — no OpenCV, no camera conflict), passes
-        it to Claude, then speaks the spatial correction phrase.
+        For each active event, requests a fresh frame from GET /sensor/live-frame-b64
+        (OpenCV in the API process), passes it to Claude, then speaks the correction phrase.
 
 Camera ownership:
-    The browser holds the camera via getUserMedia. This agent requests frames
-    via the same POST /voice/push → browser captures → POST /vision/frame →
-    agent polls GET /vision/frame/{tick_id} pipeline used by vision_agent.
+    Same as vision_agent — webcam via FastAPI only.
 """
 
 import asyncio
 import logging
-import time
 import httpx
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,6 +33,7 @@ from app.services.spatial_service import (
     correction_phrase,
     object_retrieved_phrase,
     object_lost_phrase,
+    unverified_alert_voice_fallback,
 )
 from app.services.claude_service import locate_object_and_user_in_frame
 from agents.agent_messages import VoiceAlert
@@ -151,34 +148,18 @@ async def _escalate_repeated_phrase(ctx: Context, state: CorrectionState, phrase
         )
 
 
-async def _request_browser_frame(tick_id: str, timeout: float = 5.0) -> str | None:
-    """
-    Ask the browser to capture a frame for a correction tick, then poll for it.
-    Uses a short 5s timeout since correction ticks fire every 3s.
-    """
+async def _request_live_frame(timeout: float = 5.0) -> str | None:
+    """One OpenCV frame from the API (shared with vision_agent)."""
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            await client.post(f"{_api_base()}/voice/push", json={
-                "type": "capture",
-                "data": {"event_id": tick_id},
-            })
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(f"{_api_base()}/sensor/live-frame-b64")
+            if resp.status_code != 200:
+                return None
+            b64 = resp.json().get("image_b64")
+            if isinstance(b64, str) and b64.strip():
+                return b64
     except Exception as e:
-        logger.debug(f"[VoiceAgent] Capture request failed: {e}")
-        return None
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        await asyncio.sleep(0.4)
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"{_api_base()}/vision/frame/{tick_id}")
-                if resp.status_code == 200:
-                    return resp.json()["image_b64"]
-        except Exception:
-            pass
-
-    logger.debug(f"[VoiceAgent] No frame received within {timeout}s for tick {tick_id}")
+        logger.debug(f"[VoiceAgent] live-frame-b64 failed: {e}")
     return None
 
 
@@ -191,6 +172,20 @@ async def startup(ctx: Context) -> None:
 
 @voice_agent.on_message(VoiceAlert)
 async def handle_voice_alert(ctx: Context, sender: str, msg: VoiceAlert) -> None:
+    trusted = getattr(msg, "spatial_guidance_trusted", True)
+    if not trusted:
+        phrase = (getattr(msg, "initial_context_message", None) or "").strip()
+        if not phrase:
+            phrase = unverified_alert_voice_fallback(msg.event_type)
+        ctx.logger.info(
+            "[VoiceAlert] event=%s unverified scene — context guidance (no spatial loop)",
+            msg.event_id,
+        )
+        _active_corrections.pop(msg.event_id, None)
+        stop_all()
+        speak(phrase, correction=False)
+        return
+
     object_zone = {
         "x": msg.object_x,
         "y": msg.object_y,
@@ -225,11 +220,9 @@ async def correction_loop(ctx: Context) -> None:
     if not _active_corrections:
         return
 
-    # Request one frame from the browser — shared across all active states this tick
-    tick_id = f"voice_tick_{int(time.monotonic() * 1000)}"
-    image_b64 = await _request_browser_frame(tick_id)
+    image_b64 = await _request_live_frame()
     if image_b64 is None:
-        ctx.logger.debug("correction_loop: no browser frame — skipping tick")
+        ctx.logger.debug("correction_loop: no API frame — skipping tick")
         return
 
     resolved: list[str] = []

@@ -22,6 +22,7 @@ Similarity score (cosine, Atlas convention): (1 + cos_sim) / 2
 import math
 from bson import ObjectId
 from app.models.sensor import SensorPayload
+from app.services.baseline_stats import stat as baseline_stat
 
 # (payload_field, baseline_doc_key)
 EMBEDDING_FIELDS = [
@@ -34,35 +35,36 @@ EMBEDDING_FIELDS = [
     ("pressure",       "pressure"),
 ]
 
-_FALLBACK = {
-    "temperature":    {"mean": 22.0,   "std_dev": 1.5},
-    "sound_level":    {"mean": 200.0,  "std_dev": 50.0},
-    "magnetic_state": {"mean": 0.0,    "std_dev": 1.0},
-    "accel_x":        {"mean": 0.0,    "std_dev": 0.05},
-    "accel_y":        {"mean": 0.0,    "std_dev": 0.05},
-    "accel_z":        {"mean": 9.81,   "std_dev": 0.1},
-    "pressure":       {"mean": 1013.0, "std_dev": 2.0},
-}
-
 ANOMALY_SIMILARITY_THRESHOLD = 0.82
+
+
+def _embed_scalar(
+    value: float | None,
+    baseline: dict | None,
+    baseline_key: str,
+) -> float:
+    """Use measured value, or baseline mean when sensor not present (neutral dimension)."""
+    if value is not None:
+        return float(value)
+    return baseline_stat(baseline, baseline_key)["mean"]
 
 
 def payload_to_embedding(payload: SensorPayload, baseline: dict | None) -> list[float]:
     """Z-score normalize 7 sensor fields, then L2-normalize to a unit vector."""
     raw = {
-        "temperature_c":  payload.temperature_c,
+        "temperature_c":  _embed_scalar(payload.temperature_c, baseline, "temperature"),
         "sound_level":    float(payload.sound_level),
         "magnetic_state": float(payload.magnetic_state),
         "accel_x":        payload.accel_x,
         "accel_y":        payload.accel_y,
         "accel_z":        payload.accel_z,
-        "pressure":       payload.pressure,
+        "pressure":       _embed_scalar(payload.pressure, baseline, "pressure"),
     }
     vec = []
     for payload_field, baseline_key in EMBEDDING_FIELDS:
-        stats = (baseline or {}).get(baseline_key, _FALLBACK[baseline_key])
-        mean = float(stats.get("mean", 0.0))
-        std  = float(stats.get("std_dev", 1.0)) or 1.0
+        st = baseline_stat(baseline, baseline_key)
+        mean = st["mean"]
+        std = st["std_dev"] or 1.0
         vec.append((raw[payload_field] - mean) / std)
 
     magnitude = math.sqrt(sum(v * v for v in vec)) or 1.0
@@ -81,13 +83,15 @@ async def store_sensor_vector(
         "embedding": embedding,
         "is_anomaly": is_anomaly,
         "payload": {
-            "temperature_c":  payload.temperature_c,
-            "sound_level":    payload.sound_level,
-            "magnetic_state": payload.magnetic_state,
-            "accel_x":        payload.accel_x,
-            "accel_y":        payload.accel_y,
-            "accel_z":        payload.accel_z,
-            "pressure":       payload.pressure,
+            "temperature_c":   payload.temperature_c,
+            "sound_level":     payload.sound_level,
+            "magnetic_state":  payload.magnetic_state,
+            "accel_x":         payload.accel_x,
+            "accel_y":         payload.accel_y,
+            "accel_z":         payload.accel_z,
+            "gyro_magnitude":  payload.gyro_magnitude,
+            "light_level":     payload.light_level,
+            "pressure":        payload.pressure,
         },
         "timestamp_iso": payload.timestamp.isoformat(),
     })

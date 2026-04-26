@@ -23,6 +23,7 @@ import logging
 import queue
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -30,6 +31,7 @@ import numpy as np
 
 from app.config import settings
 from app.services.stt_service import transcribe_sync, numpy_to_wav_bytes
+from app.services.tts_service import should_suppress_voice_capture
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ SILENCE_CHUNKS       = 12     # 12 x 100ms = 1.2 s of quiet -> end of utterance
 MIN_SPEECH_CHUNKS    = 4      # at least 400ms of speech before processing
 MAX_SPEECH_CHUNKS    = 80     # cap at 8 s to prevent runaway recordings
 
-# ── Wake words (checked against normalized transcript; order longest-first in logic) ──
+# ── Wake words (checked against normalized transcript; longest matched first) ──
 WAKE_WORDS = [
     "hey homepulse",
     "hey home pulse",
@@ -59,6 +61,19 @@ WAKE_WORDS = [
     "homepulse",
 ]
 
+# Scribe often hears "pulse" as posts / hosts / pul… — match without making the user re-say it 5 times.
+_WAKE_FUZZY = (
+    # hey|hi|hello|ok|yo + home + (pulse | common corruptions)
+    r"^(?:hey|hi|hello|ok|yo)[,\s]+home\s+(?:pulse|posts?|pul\w{0,4}|host\w{0,3})\b",
+    r"^(?:hey|hi|hello|ok|yo)[,\s]+homepulse\b",
+    # "hey, pulse" / "hi pulse" (drops "home")
+    r"^(?:hey|hi|hello|ok|yo)[,\s]+(?:home\s+)?(?:pulse|posts?)\b",
+    # Just "home pulse" / "home posts" (two words)
+    r"^home\s+(?:pulse|posts?|pul\w{0,4}|host\w{0,3})\b",
+    r"^homepulse\b",
+)
+_WAKE_FUZZY_COMPILED = [re.compile(p, re.I) for p in _WAKE_FUZZY]
+
 
 def _voice_push_url() -> str:
     return f"{settings.HOMEPULSE_API_BASE.rstrip('/')}/voice/push"
@@ -69,6 +84,8 @@ def _normalize_for_wake(s: str) -> str:
     x = s.lower().strip()
     x = re.sub(r"[,;]", " ", x)
     x = re.sub(r"\s+", " ", x).strip()
+    # Scribe often ends short phrases with "." — don't treat that as a follow-up "question"
+    x = re.sub(r"[.?!…]+$", "", x).strip()
     return x
 
 
@@ -78,7 +95,7 @@ def _push_wake_ack() -> None:
         payload = json.dumps(
             {
                 "type": "wake_ack",
-                "text": "Wake phrase heard — sending your request to HomePulse.",
+                "text": "Wake phrase heard.",
             }
         ).encode("utf-8")
         req = urllib.request.Request(
@@ -97,6 +114,16 @@ detected_query_queue: queue.Queue[str] = queue.Queue()
 _listener_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 
+# After a greeting or assistant answer, accept one or more utterances without the wake phrase.
+FOLLOWUP_WINDOW_SECONDS = 22.0
+_followup_deadline: float = 0.0
+
+
+def arm_voice_followup_window() -> None:
+    """Extend the window where STT text is treated as a question without saying the wake word."""
+    global _followup_deadline
+    _followup_deadline = time.monotonic() + FOLLOWUP_WINDOW_SECONDS
+
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -104,16 +131,34 @@ def _rms(chunk: np.ndarray) -> float:
     return float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
 
 
+def _wake_phrase_end(norm: str) -> int | None:
+    """Length of wake prefix in normalized (lowercase) text, or None."""
+    for wake in sorted(WAKE_WORDS, key=len, reverse=True):
+        if norm.startswith(wake):
+            return len(wake)
+    for cre in _WAKE_FUZZY_COMPILED:
+        m = cre.match(norm)
+        if m:
+            return m.end()
+    return None
+
+
 def _extract_query(transcript: str) -> str | None:
     """
     Strip the wake word from the start of a transcript and return the question.
-    Returns None if no wake word is found or nothing follows it.
+    Returns None if no wake word is found (unless inside follow-up window).
+    Returns \"\" if the user only said the wake phrase (greeting-only — no default recap question).
     """
-    lower = transcript.lower().strip()
-    for wake in WAKE_WORDS:
-        if lower.startswith(wake):
-            question = transcript[len(wake):].strip().lstrip(",. ")
-            return question if question else "What is happening at home right now?"
+    raw = transcript.strip()
+    if not raw:
+        return None
+    norm = _normalize_for_wake(raw)
+    wake_end = _wake_phrase_end(norm)
+    if wake_end is not None:
+        return norm[wake_end:].strip().lstrip(",. ")
+    now = time.monotonic()
+    if now < _followup_deadline:
+        return raw
     return None
 
 
@@ -141,6 +186,8 @@ def _listen_loop() -> None:
         energy = _rms(chunk)
 
         if state == "idle":
+            if should_suppress_voice_capture():
+                return
             if energy > SPEECH_RMS_THRESHOLD:
                 state = "recording"
                 speech_chunks = [chunk]
@@ -158,18 +205,24 @@ def _listen_loop() -> None:
             # Utterance ended: 1.2s of silence, or max length hit
             if silence_count >= SILENCE_CHUNKS or len(speech_chunks) >= MAX_SPEECH_CHUNKS:
                 if len(speech_chunks) >= MIN_SPEECH_CHUNKS:
-                    audio = np.concatenate(speech_chunks)
-                    wav_bytes = numpy_to_wav_bytes(audio, SAMPLE_RATE)
-                    # Transcribe synchronously on callback thread (100ms budget is fine
-                    # since Scribe roundtrip << next callback gap for short phrases)
-                    transcript = transcribe_sync(wav_bytes)
-                    query = _extract_query(transcript)
-                    if query:
-                        logger.info(f"[WakeWord] Query detected: {query!r} (raw STT: {transcript!r})")
-                        _push_wake_ack()
-                        detected_query_queue.put(query)
-                    elif transcript:
-                        logger.info(f"[WakeWord] No wake word in transcript: {transcript!r}")
+                    if should_suppress_voice_capture():
+                        logger.debug("[WakeWord] Dropping utterance — TTS playing or tail cooldown")
+                    else:
+                        audio = np.concatenate(speech_chunks)
+                        wav_bytes = numpy_to_wav_bytes(audio, SAMPLE_RATE)
+                        # Transcribe synchronously on callback thread (100ms budget is fine
+                        # since Scribe roundtrip << next callback gap for short phrases)
+                        transcript = transcribe_sync(wav_bytes)
+                        query = _extract_query(transcript)
+                        if query is not None:
+                            if query.strip():
+                                logger.info(f"[WakeWord] Query detected: {query!r} (raw STT: {transcript!r})")
+                            else:
+                                logger.info(f"[WakeWord] Wake only (no question yet) raw STT: {transcript!r}")
+                            _push_wake_ack()
+                            detected_query_queue.put(query)
+                        elif transcript:
+                            logger.info(f"[WakeWord] No wake word in transcript: {transcript!r}")
 
                 speech_chunks = []
                 silence_count = 0
@@ -184,7 +237,9 @@ def _listen_loop() -> None:
             callback=_callback,
         ):
             logger.info(
-                f"[WakeWord] Listening... say one of: {WAKE_WORDS} followed by your question"
+                "[WakeWord] Listening... say a wake phrase to start, then your question — "
+                "or ask another question within %.0fs after HomePulse replies without repeating the wake phrase.",
+                FOLLOWUP_WINDOW_SECONDS,
             )
             _stop_event.wait()   # block until stop() is called
     except Exception as exc:

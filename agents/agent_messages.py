@@ -33,6 +33,8 @@ class IrregularityEvent(Model):
     sensor_payload: dict
     sensor_reason: str = ""     # human-readable anomaly detail from anomaly_detector
     timestamp_iso: str          # ISO 8601 string, e.g. "2025-04-25T14:32:00"
+    # Consecutive 5s ticks where scoring (or force_triage) fired an anomaly; resets after 3 → auto email.
+    consecutive_sensor_triggers: int = 1
 
 
 class TriageResult(Model):
@@ -69,6 +71,8 @@ class VisionResult(Model):
     cropped_url: str
     zone_name: str
     timestamp_iso: str
+    # False when zone came from Mongo calibration map, not Claude object detection in-frame.
+    spatial_crop_trusted: bool = True
 
 
 class MonitorDecision(Model):
@@ -143,6 +147,10 @@ class VoiceAlert(Model):
 
     Fractional coords come from Claude vision; they match Cloudinary's fl_relative
     coordinate system used in the cropped alert image URL.
+
+    When spatial_guidance_trusted is False (e.g. Mongo room_zones fallback because
+    Claude found nothing in-frame), coords are not treated as a real object sighting;
+    voice_agent speaks initial_context_message instead and skips the correction loop.
     """
     event_id: str
     user_id: str
@@ -155,3 +163,5 @@ class VoiceAlert(Model):
     raw_url: str        # full-frame Cloudinary URL (for audit trail)
     severity: str
     timestamp_iso: str
+    spatial_guidance_trusted: bool = True
+    initial_context_message: str = ""

@@ -7,11 +7,14 @@ Role in the FetchAI network:
     dashboard_agent and receives the Claude-generated answer back.
 
 Full pipeline per utterance:
-    [Deaf user speaks] "Hey HomePulse, what happened at home today?"
+    [User speaks] "Hey HomePulse" only
+      -> short TTS greeting ("Hello, how can I help you?") — no automatic home recap
+      -> a follow-up window opens where the next utterance does not need the wake phrase
+    [User speaks] "Hey HomePulse, what's on my profile?" (or follow-up: "What incidents were there?")
       -> sounddevice captures audio (wake_word_service background thread)
       -> energy VAD detects utterance boundaries
       -> ElevenLabs Scribe (stt_service) transcribes to text
-      -> wake word stripped, question extracted
+      -> wake word stripped (or whole transcript taken during follow-up window)
       -> voice_input_agent.on_interval picks up from detected_query_queue
       -> VoiceQuery sent to dashboard_agent via FetchAI
       -> dashboard_agent queries Claude + MongoDB, returns VoiceQueryResponse
@@ -34,6 +37,7 @@ ElevenLabs role:
 
 import sys
 import os
+import re
 import logging
 import httpx
 from datetime import datetime
@@ -48,7 +52,11 @@ from uagents_core.contrib.protocols.chat import ChatMessage
 
 from app.config import settings
 from app.database import connect_db, get_db
-from app.services.wake_word_service import start as start_listener, detected_query_queue
+from app.services.wake_word_service import (
+    arm_voice_followup_window,
+    start as start_listener,
+    detected_query_queue,
+)
 from app.services.tts_service import speak_async
 from agents.agent_messages import (
     VoiceQuery,
@@ -68,17 +76,93 @@ voice_input_agent = Agent(
 # query_id -> original transcript; used when pushing answer to WebSocket
 _pending: dict[str, str] = {}
 
+# After wake word with no follow-up question — short greeting only (no Claude recap).
+VOICE_ASSISTANT_GREETING = "Hello, how can I help you?"
+
+# When STT is filler or small-talk, don't call the dashboard (avoids long sensor recaps).
+VOICE_NOT_A_QUESTION_REPLY = (
+    "Say what you need — for example your profile, recent alerts, or what's happening at home."
+)
+
+# Avoid bare "how" — matches echoed "how can I help you" from TTS. No bare "week"/"report" (TV false positives).
+_TOPIC_WORD = re.compile(
+    r"\b(?:"
+    r"what|when|why|who|where|which|tell|show|list|give|any|status|"
+    r"home|house|alert|incidents?|events?|sensor|sensors|monitor|monitoring|"
+    r"profile|account|email|contact|emergency|happened|summary|rundown|"
+    r"safe|safety|noise|sound|temperature|recent|today|tonight|yesterday|"
+    r"morning|wrong|problem|issue|anything|everything|update|"
+    r"how['']?s|"
+    r"how\s+(?:is|are|was|were|many|much|do|does|did|has|have|long|often|about|goes|come)"
+    r")\b",
+    re.I,
+)
+
+_ECHO_SUBSTRINGS = (
+    "how can i help",
+    "what can i help",
+    "how can i help you today",
+    "i'm homepulse",
+    "im homepulse",
+    "your home safety assistant",
+    "home safety assistant",
+    "seconds pause",
+    "second pause",
+    "minutes pause",
+    "minute pause",
+    "weekly summary",
+    "here's your weekly",
+    "here is your weekly",
+)
+
+
+def _strip_stt_artifacts(text: str) -> str:
+    """Remove Scribe stage directions like '(4 seconds pause)' that falsely add '?' intent."""
+    t = re.sub(r"\([^)]*\)", " ", text)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _is_likely_assistant_echo(text: str) -> bool:
+    n = _strip_stt_artifacts(text).lower()
+    return any(s in n for s in _ECHO_SUBSTRINGS)
+
+
+def _utterance_asks_for_home_data(text: str) -> bool:
+    """
+    True only if we should run the dashboard / Claude path.
+    Blocks casual lines and disfluencies from triggering sensor/event recaps.
+    """
+    t = _strip_stt_artifacts(text)
+    if not t:
+        return False
+    if _is_likely_assistant_echo(t):
+        return False
+    if "?" in t:
+        return True
+    if _TOPIC_WORD.search(t):
+        return True
+    return False
+
 
 def _voice_push_url() -> str:
     return f"{settings.HOMEPULSE_API_BASE.rstrip('/')}/voice/push"
 
 
-# Phrases (after wake word) that mean "send the deferred alert email"
+# Substrings (anywhere in utterance) that mean "send the deferred alert email"
 _EXTERNAL_HELP_PHRASES = (
     "send a message",
     "send message",
     "send an email",
-    "send email",
+    "send the email",
+    "send that email",
+    "send notification email",
+    "send the notification",
+    "send alert email",
+    "you can send",
+    "go ahead and send",
+    "please send",
+    "okay send",
+    "yes send",
     "email someone",
     "notify someone",
     "get help",
@@ -90,12 +174,42 @@ _EXTERNAL_HELP_PHRASES = (
     "notify my",
     "tell someone to fix",
     "send someone to",
+    "dispatch email",
+    "notify my contacts",
+    "notify emergency",
+    "email them",
+    "email it now",
+)
+
+# Assistant coaching ("say send email…") — do not treat as user consent to send.
+_INSTRUCTIONAL_EMAIL_HINT = re.compile(
+    r"\b(?:say|tell\s+them|you\s+can\s+say)\b.{0,52}\b(?:send|e-?mail)\b",
+    re.I,
+)
+
+# Flexible patterns for STT variants ("it's fine to send an email", "go ahead you can email").
+_EXTERNAL_HELP_REGEX = re.compile(
+    r"\b("
+    r"send\s+(?:an?\s+|the\s+|that\s+)?(?:notification\s+|alert\s+)?(?:e-?mail|mail)\b|"
+    r"dispatch\s+(?:the\s+)?(?:e-?mail|notification|alert)\b|"
+    r"(?:go\s+ahead|you\s+can|please|okay)[,\s]+(?:and\s+)?(?:send|fire)\s+(?:an?\s+|the\s+)?(?:e-?mail|notification)\b|"
+    r"\bnotify\s+(?:my\s+)?(?:contacts?|family|emergency(?:\s+contacts?)?)\b|"
+    r"\be-?mail\s+(?:them|it|the\s+alert|my\s+contacts)\b"
+    r")",
+    re.I,
 )
 
 
 def _transcript_requests_external_help(text: str) -> bool:
-    t = text.lower().strip()
-    return any(p in t for p in _EXTERNAL_HELP_PHRASES)
+    raw = _strip_stt_artifacts(text)
+    t = raw.lower().strip()
+    if not t:
+        return False
+    if _INSTRUCTIONAL_EMAIL_HINT.search(raw):
+        return False
+    if any(p in t for p in _EXTERNAL_HELP_PHRASES):
+        return True
+    return _EXTERNAL_HELP_REGEX.search(raw) is not None
 
 
 async def _try_send_pending_escalation_email(ctx: Context, user_id: str) -> bool:
@@ -106,6 +220,15 @@ async def _try_send_pending_escalation_email(ctx: Context, user_id: str) -> bool
     if not user_id or user_id == "unknown":
         ctx.logger.error("[VoiceInput] DEFAULT_USER_ID missing — cannot send help email")
         await speak_async("HomePulse is not configured with a user account for alerts.", correction=False)
+        return False
+
+    if not (settings.GMAIL_ADDRESS or "").strip() or not (settings.GMAIL_APP_PASSWORD or "").strip():
+        ctx.logger.error("[VoiceInput] GMAIL_ADDRESS / GMAIL_APP_PASSWORD not set — cannot send email")
+        await speak_async(
+            "Email is not configured on this server. Add Gmail credentials to the HomePulse environment.",
+            correction=False,
+        )
+        await _push("error", "Gmail not configured — alert email not sent.")
         return False
 
     if not NOTIFICATION_AGENT_ADDRESS:
@@ -165,8 +288,10 @@ async def _try_send_pending_escalation_email(ctx: Context, user_id: str) -> bool
     )
 
     await ctx.send(NOTIFICATION_AGENT_ADDRESS, order)
+    ctx.logger.info("[VoiceInput] EscalationOrder sent to notification_agent — Gmail send runs there")
     await speak_async("Okay. Sending the notification email now.", correction=False)
     await _push("answer", "Sending notification email for the latest alert.")
+    arm_voice_followup_window()
     return True
 
 
@@ -195,16 +320,36 @@ async def poll_queries(ctx: Context) -> None:
         except Exception:
             break
 
-        query_id = str(uuid4())
-        _pending[query_id] = question
-        ctx.logger.info(f"[VoiceInput] Query {query_id[:8]}: {question!r}")
+        question = (question or "").strip()
+        if not question:
+            ctx.logger.info("[VoiceInput] Wake-only — greeting user (no dashboard query)")
+            await _push("transcript", "")
+            await _push("answer", VOICE_ASSISTANT_GREETING)
+            await speak_async(VOICE_ASSISTANT_GREETING, correction=False)
+            arm_voice_followup_window()
+            continue
 
-        # Show "heard you" immediately -- don't wait for Claude
+        query_id = str(uuid4())
+        ctx.logger.info(f"[VoiceInput] Heard {query_id[:8]}: {question!r}")
         await _push("transcript", question)
+
+        if _is_likely_assistant_echo(question):
+            ctx.logger.info("[VoiceInput] Ignoring likely TTS / assistant echo — not routing")
+            continue
 
         if _transcript_requests_external_help(question):
             uid = settings.DEFAULT_USER_ID or ""
             await _try_send_pending_escalation_email(ctx, uid)
+            continue
+
+        if not _utterance_asks_for_home_data(question):
+            ctx.logger.info(
+                "[VoiceInput] Not routing to dashboard — no home/profile/incident question: %r",
+                question,
+            )
+            await _push("answer", VOICE_NOT_A_QUESTION_REPLY)
+            await speak_async(VOICE_NOT_A_QUESTION_REPLY, correction=False)
+            arm_voice_followup_window()
             continue
 
         if not DASHBOARD_AGENT_ADDRESS:
@@ -212,6 +357,7 @@ async def poll_queries(ctx: Context) -> None:
             await _push("error", "Dashboard agent not configured.")
             continue
 
+        _pending[query_id] = question
         await ctx.send(
             DASHBOARD_AGENT_ADDRESS,
             VoiceQuery(
@@ -235,6 +381,7 @@ async def handle_response(ctx: Context, sender: str, msg: VoiceQueryResponse) ->
     ctx.logger.info(f"[VoiceInput] Answer for {msg.query_id[:8]}: {msg.answer[:60]}...")
     await _push("answer", msg.answer)
     await speak_async(msg.answer, correction=False)
+    arm_voice_followup_window()
 
 
 # ── ASI:One passthrough ───────────────────────────────────────────────────────

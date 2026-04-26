@@ -1,14 +1,23 @@
-from fastapi import APIRouter, HTTPException, Request
+import logging
+import uuid
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from datetime import datetime, timezone
 from typing import Any
 
+from bson import ObjectId
+
+from app.config import settings
 from app.models.sensor import SensorPayload
 from app.models.event import EventResponse
 from app.services.anomaly_detector import score_reading
+from app.services.camera_snapshot_service import record_camera_snapshot
+from app.services.snapshot_cloudinary_gate import refund_upload_slot, try_consume_upload_slot
 from app.services.vision_service import capture_frame
-from app.services.cloudinary_service import upload_and_crop
+from app.services.cloudinary_service import upload_and_crop, frame_to_base64
 from app.utils.serial_reader import inject_reading
 from app.database import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -93,26 +102,205 @@ async def simulate_reading(request: Request) -> EventResponse:
     )
 
 
+@router.get("/live-frame-b64")
+async def live_frame_b64() -> dict:
+    """
+    One OpenCV frame from the bureau webcam as base64 JPEG (no Cloudinary).
+    Used by vision_agent / voice_agent so the camera stays on the API process.
+    """
+    logger.debug("sensor live-frame-b64: requesting capture")
+    frame = await capture_frame()
+    if frame is None:
+        logger.warning("sensor live-frame-b64: no frame (webcam unavailable)")
+        raise HTTPException(status_code=503, detail="Webcam unavailable")
+    b64 = frame_to_base64(frame)
+    logger.debug(
+        "sensor live-frame-b64: encoded JPEG base64 len=%s shape=%s",
+        len(b64),
+        frame.shape,
+    )
+    return {"ok": True, "image_b64": b64}
+
+
+@router.get("/preview-jpeg")
+async def bureau_preview_jpeg() -> Response:
+    """
+    Latest OpenCV frame as raw JPEG bytes — no Cloudinary. Use for dev UI <img src>.
+    """
+    logger.info("sensor preview-jpeg: taking snapshot…")
+    frame = await capture_frame()
+    if frame is None:
+        logger.warning("sensor preview-jpeg: snapshot aborted — webcam unavailable")
+        raise HTTPException(status_code=503, detail="Webcam unavailable")
+    import cv2
+
+    h, w = frame.shape[:2]
+    _, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    raw = buffer.tobytes()
+    logger.info(
+        "sensor preview-jpeg: snapshot ok %sx%s — JPEG encoded %s bytes (no Cloudinary)",
+        w,
+        h,
+        len(raw),
+    )
+    return Response(
+        content=raw,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@router.post("/preview-snapshot")
+async def bureau_preview_snapshot(
+    user_id: str | None = Query(None),
+    force: bool = Query(False, description="development only: bypass upload slot gate"),
+) -> dict:
+    """
+    Capture one OpenCV frame, upload to Cloudinary with a unique public_id, and store metadata
+    in MongoDB (camera_snapshots) for the caregiver UI. Requires CLOUDINARY_* in .env.
+    Optional query: user_id (defaults to DEFAULT_USER_ID). Live tile still uses GET /preview-jpeg.
+    Uploads share a per-user slot pool with vision: one slot is granted per investigating triage;
+    without a slot, returns 429 until the next anomaly (force=true in development bypasses).
+    """
+    if not settings.CLOUDINARY_CLOUD_NAME or not settings.CLOUDINARY_API_KEY:
+        logger.warning(
+            "sensor preview-snapshot: Cloudinary not configured (cloud_name/api_key missing)"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Cloudinary not configured — use GET /sensor/preview-jpeg for local preview",
+        )
+
+    uid = (user_id or settings.DEFAULT_USER_ID or "").strip()
+    if not uid:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id query param or DEFAULT_USER_ID in .env required to store snapshots",
+        )
+    try:
+        ObjectId(uid)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid user_id: {e}") from e
+
+    db = get_db()
+    slot_consumed = False
+    if settings.SNAPSHOT_CLOUDINARY_GATE_ENABLED:
+        bypass = force and settings.APP_ENV == "development"
+        if bypass:
+            logger.warning("sensor preview-snapshot: force=True bypassing upload slot (APP_ENV=development)")
+        elif not await try_consume_upload_slot(db, uid):
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "No Cloudinary upload slot — wait for the next sensor anomaly (investigating triage), "
+                    "or use GET /sensor/preview-jpeg for a local frame. "
+                    "In development, ?force=true bypasses this gate."
+                ),
+            )
+        else:
+            slot_consumed = not bypass
+
+    logger.info(
+        "sensor preview-snapshot: taking snapshot for Cloudinary (cloud=%s) user=%s…",
+        settings.CLOUDINARY_CLOUD_NAME,
+        uid[:12],
+    )
+    frame = await capture_frame()
+    if frame is None:
+        logger.warning("sensor preview-snapshot: snapshot aborted — webcam unavailable")
+        if slot_consumed:
+            await refund_upload_slot(db, uid)
+        raise HTTPException(status_code=503, detail="Webcam unavailable")
+
+    import cloudinary.uploader
+    import cv2
+
+    h, w = frame.shape[:2]
+    _, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    jpeg_bytes = buffer.tobytes()
+    snap_key = uuid.uuid4().hex[:10]
+    public_id = f"homepulse/snapshots/preview/{uid}/{snap_key}"
+    logger.info(
+        "sensor preview-snapshot: OpenCV JPEG buffer %s bytes (%sx%s) — uploading %s…",
+        len(jpeg_bytes),
+        w,
+        h,
+        public_id,
+    )
+    try:
+        result = cloudinary.uploader.upload(
+            jpeg_bytes,
+            public_id=public_id,
+            resource_type="image",
+            overwrite=False,
+        )
+    except Exception as e:
+        if slot_consumed:
+            await refund_upload_slot(db, uid)
+        logger.exception("sensor preview-snapshot: Cloudinary upload failed")
+        raise HTTPException(status_code=502, detail=f"Cloudinary upload failed: {e}") from e
+    url = result.get("secure_url", "")
+    cw = result.get("width", w)
+    ch = result.get("height", h)
+    logger.info(
+        "sensor preview-snapshot: Cloudinary upload done public_id=%s url=%s…",
+        result.get("public_id"),
+        url[:72] + ("…" if len(url) > 72 else ""),
+    )
+
+    inserted = await record_camera_snapshot(
+        db,
+        user_id=uid,
+        url=url,
+        cropped_url="",
+        public_id=result.get("public_id", public_id),
+        width=cw,
+        height=ch,
+        source="preview",
+        event_id=None,
+        event_type="",
+    )
+    return {
+        "snapshot_id": inserted,
+        "public_id": result["public_id"],
+        "url": result["secure_url"],
+        "width": cw,
+        "height": ch,
+    }
+
+
 @router.post("/capture")
 async def capture_reference_frame() -> dict:
     """
     Capture a single webcam frame and upload it to Cloudinary as a reference image
     for zone calibration. Returns the raw Cloudinary URL and public_id.
     """
+    logger.info("sensor /capture (calibration): taking snapshot…")
     frame = await capture_frame()
     if frame is None:
+        logger.warning("sensor /capture: webcam unavailable")
         raise HTTPException(status_code=503, detail="Webcam unavailable")
 
     import cloudinary.uploader
     import cv2
-    from app.config import settings
 
     _, buffer = cv2.imencode(".jpg", frame)
+    jpeg_bytes = buffer.tobytes()
+    logger.info(
+        "sensor /capture: JPEG %s bytes — uploading to Cloudinary (reference/calibration)…",
+        len(jpeg_bytes),
+    )
     result = cloudinary.uploader.upload(
-        buffer.tobytes(),
+        jpeg_bytes,
         public_id="homepulse/reference/calibration",
         resource_type="image",
         overwrite=True,
+    )
+    url = result.get("secure_url", "")
+    logger.info(
+        "sensor /capture: Cloudinary ok public_id=%s url=%s…",
+        result.get("public_id"),
+        url[:72] + ("…" if len(url) > 72 else ""),
     )
     return {
         "public_id": result["public_id"],

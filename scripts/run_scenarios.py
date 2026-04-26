@@ -58,7 +58,7 @@ SCENARIOS: dict[str, dict] = {
             "sound_level": 210,
             "temperature_c": 48.0,
             "magnetic_state": 0,
-            "accel_x": 0.01, "accel_y": 0.02, "accel_z": 9.80,
+            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.2,
             "pressure": 1013.0,
         },
         "hour": 3,
@@ -71,7 +71,7 @@ SCENARIOS: dict[str, dict] = {
             "sound_level": 420,
             "temperature_c": 22.5,
             "magnetic_state": 0,
-            "accel_x": 0.01, "accel_y": 0.01, "accel_z": 9.81,
+            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 1.0,
             "pressure": 1013.0,
         },
         "hour": 2,
@@ -84,7 +84,7 @@ SCENARIOS: dict[str, dict] = {
             "sound_level": 205,
             "temperature_c": 23.0,
             "magnetic_state": 1,
-            "accel_x": 0.01, "accel_y": 0.01, "accel_z": 9.81,
+            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 1.0,
             "pressure": 1013.0,
         },
         "hour": 1,
@@ -97,7 +97,7 @@ SCENARIOS: dict[str, dict] = {
             "sound_level": 240,
             "temperature_c": 24.5,
             "magnetic_state": 0,
-            "accel_x": 0.02, "accel_y": 0.01, "accel_z": 9.81,
+            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 1.0,
             "pressure": 1013.0,
         },
         "hour": 19,
@@ -110,7 +110,7 @@ SCENARIOS: dict[str, dict] = {
             "sound_level": 350,
             "temperature_c": 29.0,
             "magnetic_state": 0,
-            "accel_x": 0.5, "accel_y": 0.3, "accel_z": 9.7,
+            "accel_x": 0.1, "accel_y": 0.1, "accel_z": 1.05,
             "pressure": 1013.0,
         },
         "hour": 18,
@@ -123,41 +123,37 @@ SCENARIOS: dict[str, dict] = {
 # ── Inline anomaly scorer (doesn't need MongoDB) ─────────────────────────────
 
 def score_inline(payload: dict, hour: int, day_type: str) -> AnomalyResult:
-    """Score a reading against hardcoded baselines without MongoDB."""
-    from app.services.anomaly_detector import _classify_temp_event, _classify_sound_event
-
+    """Score a reading against hardcoded baselines without MongoDB (simplified)."""
     multiplier = DEMO_USER["threshold_multiplier"]
     p = SensorPayload(**payload, timestamp=datetime.utcnow())
 
-    # Temperature check
-    temp_dev = abs(p.temperature_c - BASELINE["temperature"]["mean"])
-    if temp_dev > multiplier * BASELINE["temperature"]["std_dev"]:
-        score = round(temp_dev / BASELINE["temperature"]["std_dev"], 2)
-        return AnomalyResult(
-            triggered=True,
-            event_type=_classify_temp_event(p),
-            deviation_score=score,
-            severity=compute_severity(score),
-            sensor="temperature",
-        )
+    if p.temperature_c is not None:
+        temp_dev = abs(p.temperature_c - BASELINE["temperature"]["mean"])
+        if temp_dev > multiplier * BASELINE["temperature"]["std_dev"]:
+            score = round(temp_dev / BASELINE["temperature"]["std_dev"], 2)
+            return AnomalyResult(
+                triggered=True,
+                event_type="TEMPERATURE_ANOMALY",
+                deviation_score=score,
+                severity=compute_severity(score),
+                sensor="temperature",
+            )
 
-    # Sound check
     sound_dev = abs(p.sound_level - BASELINE["sound_level"]["mean"])
     if sound_dev > multiplier * BASELINE["sound_level"]["std_dev"]:
         score = round(sound_dev / BASELINE["sound_level"]["std_dev"], 2)
         return AnomalyResult(
             triggered=True,
-            event_type=_classify_sound_event(p),
+            event_type="SOUND_ANOMALY",
             deviation_score=score,
             severity=compute_severity(score),
             sensor="sound",
         )
 
-    # Magnetic check
     if p.magnetic_state == 1 and round(BASELINE["magnetic_state"]["mean"]) == 0:
         return AnomalyResult(
             triggered=True,
-            event_type="FRIDGE_OPEN",
+            event_type="DOOR_SENSOR_ANOMALY",
             deviation_score=4.0,
             severity="MEDIUM",
             sensor="magnetic",

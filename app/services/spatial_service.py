@@ -121,6 +121,34 @@ def object_retrieved_phrase(object_name: str) -> str:
     return f"Great job! Looks like you found your {object_name}. Well done."
 
 
+def unverified_alert_voice_fallback(event_type: str) -> str:
+    """
+    Last-resort TTS when we skip spatial guidance (no verified object in frame)
+    and the LLM context line failed.
+    """
+    et = (event_type or "").upper()
+    if et == "SOUND_ANOMALY":
+        return (
+            "I couldn't tie the noise to something specific in the camera view. "
+            "It might be a speaker, screen, another person nearby, a pet, or something outside — "
+            "have a quick look and listen around before worrying."
+        )
+    if et == "TEMPERATURE_ANOMALY":
+        return (
+            "I couldn't confirm the temperature issue against a specific spot in the camera view. "
+            "Check how the room feels, vents, windows, and anything that might be heating or cooling nearby."
+        )
+    if et in ("OBJECT_DROPPED", "FALL_DETECTED", "MULTIVARIATE_ANOMALY"):
+        return (
+            "I couldn't match the alert to a clear object in this frame. "
+            "Please scan the area carefully for anything out of place or anyone who might need help."
+        )
+    return (
+        "I couldn't confirm what triggered the alert from this camera angle alone. "
+        "Take a moment to look and listen around — the cause might be off-camera or something ordinary like a device playing audio."
+    )
+
+
 def object_lost_phrase(object_name: str, ticks: int) -> str:
     if ticks <= 3:
         return f"Still searching for your {object_name}. Keep moving in that direction."

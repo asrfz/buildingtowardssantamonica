@@ -128,6 +128,10 @@ void loop() {
     Serial.print(",\"magnetic\":");
     Serial.print(magneticMag, 3);
 
+    // Arduino_LSM9DS1 has no die-temp API; backend skips z-score when null.
+    Serial.print(",\"temperature_c\":null");
+    Serial.print(",\"pressure\":null");
+
     Serial.println("}");
   }
 }

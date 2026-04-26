@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.database import get_db
 from app.services import claude_service
+from app.services.claude_service import compact_user_profile_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -178,4 +179,5 @@ async def _build_response(query: str) -> str:
         user_name=user_name,
         events_summary=events_summary,
         threshold_info=threshold_info,
+        user_profile=profile,
     )

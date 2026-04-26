@@ -37,21 +37,52 @@ def serial_reader_gave_up() -> bool:
     return _serial_stopped_access
 
 
+def _optional_float(raw: dict, key: str) -> float | None:
+    if key not in raw:
+        return None
+    v = raw[key]
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_payload(raw: dict) -> dict:
     """
     Normalize Arduino JSON variants into backend SensorPayload shape.
+    Missing / JSON null → None for temperature, pressure, light (no invented defaults).
     """
     accel_mag = float(raw.get("accel", 0.0))
+    gyro_mag = float(raw.get("gyro", raw.get("gyro_magnitude", 0.0)))
     magnetic_mag = float(raw.get("magnetic", 0.0))
+    # PDM / Nicla: average abs of int16 samples — often >1023; keep int for baselines
+    sound_raw = float(raw.get("sound_level", raw.get("sound", 0.0)))
+    sound_level = max(0, min(65535, int(round(sound_raw))))
+
+    light_level: int | None = None
+    if "light" in raw or "light_level" in raw:
+        light_raw = raw.get("light_level", raw.get("light"))
+        if light_raw is not None:
+            try:
+                light_level = max(0, min(1023, int(round(float(light_raw)))))
+            except (TypeError, ValueError):
+                light_level = None
+
+    temperature_c = _optional_float(raw, "temperature_c")
+    pressure = _optional_float(raw, "pressure")
 
     return {
-        "sound_level": int(float(raw.get("sound_level", raw.get("sound", 0.0)))),
-        "temperature_c": float(raw.get("temperature_c", 22.0)),
+        "sound_level": sound_level,
+        "temperature_c": temperature_c,
         "magnetic_state": int(raw.get("magnetic_state", 1 if magnetic_mag > 60 else 0)),
+        # inputs.ino: accel/gyro are vector magnitudes; put mag on z so embedding sees motion.
         "accel_x": float(raw.get("accel_x", 0.0)),
         "accel_y": float(raw.get("accel_y", 0.0)),
         "accel_z": float(raw.get("accel_z", accel_mag)),
-        "pressure": float(raw.get("pressure", 1013.0)),
+        "gyro_magnitude": max(0.0, gyro_mag),
+        "pressure": pressure,
         "timestamp": raw.get("timestamp", datetime.now(timezone.utc).isoformat()),
         "drop_detected": int(raw.get("drop_detected", 0)),
         "light_change_detected": int(raw.get("light_change_detected", raw.get("light_triggered", 0))),
@@ -59,6 +90,7 @@ def _normalize_payload(raw: dict) -> dict:
         "gyro_triggered": int(raw.get("gyro_triggered", 0)),
         "sound_triggered": int(raw.get("sound_triggered", 0)),
         "magnetic_triggered": int(raw.get("magnetic_triggered", 0)),
+        "light_level": light_level,
     }
 
 

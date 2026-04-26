@@ -4,6 +4,9 @@ Manual baseline calibration runner.
 Reads from Arduino serial for a configurable window and computes mean + std_dev
 per sensor per hour-of-day and day-type, then writes to MongoDB sensor_baselines.
 
+Uses the same JSON normalization as sensor_agent (app.utils.serial_reader._normalize_payload)
+so keys match inputs.ino (light, sound, accel, gyro, magnetic, triggers).
+
 Usage:
     python scripts/calibrate.py               # defaults: 1 hour, uses DEFAULT_USER_ID
     python scripts/calibrate.py <user_id>     # calibrate for specific user
@@ -20,13 +23,16 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
 from app.config import settings
+from app.utils.serial_reader import _normalize_payload
+from app.services.baseline_stats import accel_magnitude_of
+from app.models.sensor import SensorPayload
 
 CALIBRATION_SECONDS = settings.CALIBRATION_HOURS * 3600
 
 
 def online_stats(samples: list[float]) -> tuple[float, float]:
-    """Return (mean, std_dev) for a list of samples."""
     n = len(samples)
     if n == 0:
         return 0.0, 1.0
@@ -39,7 +45,6 @@ async def calibrate(user_id: str) -> None:
     client = AsyncIOMotorClient(settings.MONGODB_URI)
     db = client["homepulse"]
 
-    # bucket: (hour, day_type) → {sensor: [values]}
     buckets: dict = defaultdict(lambda: defaultdict(list))
 
     print(f"\nCalibrating for user {user_id}")
@@ -49,29 +54,48 @@ async def calibrate(user_id: str) -> None:
     try:
         import serial
         start = time.time()
+        sample_count = 0
         with serial.Serial(settings.ARDUINO_SERIAL_PORT, settings.ARDUINO_BAUD_RATE, timeout=2) as ser:
             while time.time() - start < CALIBRATION_SECONDS:
                 line = ser.readline().decode("utf-8", errors="ignore").strip()
                 if not line:
                     continue
                 try:
-                    data = json.loads(line)
+                    raw = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(raw, dict) or raw.get("status") == "ready":
+                    continue
+
+                norm = _normalize_payload(raw)
+                try:
+                    p = SensorPayload(**norm)
+                except Exception:
                     continue
 
                 ts = datetime.utcnow()
                 hour = ts.hour
                 day_type = "weekend" if ts.weekday() >= 5 else "weekday"
                 key = (hour, day_type)
+                b = buckets[key]
 
-                for sensor in ("temperature_c", "sound_level", "magnetic_state",
-                               "accel_x", "accel_y", "accel_z", "pressure"):
-                    if sensor in data:
-                        buckets[key][sensor].append(float(data[sensor]))
-
-                elapsed = int(time.time() - start)
-                if elapsed % 60 == 0:
-                    print(f"  {elapsed // 60}m elapsed — {sum(len(v) for b in buckets.values() for v in b.values())} readings collected")
+                if p.temperature_c is not None:
+                    b["temperature_c"].append(p.temperature_c)
+                b["sound_level"].append(float(p.sound_level))
+                b["magnetic_state"].append(float(p.magnetic_state))
+                b["accel_x"].append(p.accel_x)
+                b["accel_y"].append(p.accel_y)
+                b["accel_z"].append(p.accel_z)
+                b["accel_magnitude"].append(accel_magnitude_of(p))
+                b["gyro_magnitude"].append(p.gyro_magnitude)
+                if p.light_level is not None:
+                    b["light_level"].append(float(p.light_level))
+                if p.pressure is not None:
+                    b["pressure"].append(p.pressure)
+                sample_count += 1
+                if sample_count % 250 == 0:
+                    elapsed = int(time.time() - start)
+                    print(f"  {elapsed}s — {sample_count} samples")
 
     except KeyboardInterrupt:
         print("\nStopped early.")
@@ -79,26 +103,32 @@ async def calibrate(user_id: str) -> None:
         print("pyserial not installed — run: pip install pyserial")
         return
 
-    # Write baselines
     print(f"\nComputing baselines for {len(buckets)} (hour, day_type) buckets...")
-    from bson import ObjectId
     uid = ObjectId(user_id)
 
     for (hour, day_type), sensors in buckets.items():
-        temp_mean, temp_std = online_stats(sensors.get("temperature_c", [22.0]))
-        sound_mean, sound_std = online_stats(sensors.get("sound_level", [200.0]))
-        mag_mean, mag_std = online_stats(sensors.get("magnetic_state", [0.0]))
+        def stat(key: str, default: tuple[float, float]) -> dict:
+            m, s = online_stats(sensors.get(key, []))
+            if not sensors.get(key):
+                m, s = default
+            return {"mean": m, "std_dev": max(s, 1e-3)}
+
+        doc = {
+            "temperature": stat("temperature_c", (22.0, 1.5)),
+            "sound_level": stat("sound_level", (200.0, 50.0)),
+            "magnetic_state": stat("magnetic_state", (0.0, 0.1)),
+            "accel_x": stat("accel_x", (0.0, 0.02)),
+            "accel_y": stat("accel_y", (0.0, 0.02)),
+            "accel_z": stat("accel_z", (1.0, 0.18)),
+            "accel_magnitude": stat("accel_magnitude", (1.0, 0.18)),
+            "gyro_magnitude": stat("gyro_magnitude", (8.0, 25.0)),
+            "light_level": stat("light_level", (450.0, 120.0)),
+            "pressure": stat("pressure", (1013.0, 2.0)),
+        }
 
         await db.sensor_baselines.update_one(
             {"user_id": uid, "hour_of_day": hour, "day_type": day_type},
-            {
-                "$set": {
-                    "temperature": {"mean": temp_mean, "std_dev": max(temp_std, 0.5)},
-                    "sound_level": {"mean": sound_mean, "std_dev": max(sound_std, 10.0)},
-                    "magnetic_state": {"mean": mag_mean, "std_dev": max(mag_std, 0.1)},
-                    "updated_at": datetime.utcnow(),
-                }
-            },
+            {"$set": {**doc, "updated_at": datetime.utcnow()}},
             upsert=True,
         )
 

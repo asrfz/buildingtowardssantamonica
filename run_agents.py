@@ -14,14 +14,16 @@ Agent pipeline overview:
             → [parallel] vision_agent   →  monitor_agent (VisionResult: Cloudinary raw + cropped URLs)
                                       ↘  voice_agent (VoiceAlert only when Claude zones are fractional)
     monitor_agent (Claude: reason with image URL + history)
-        → escalation_agent (defers email) → user says "send help…" via voice_input_agent
+        → escalation_agent (defers email if not already sent) → user says "send help…" via voice_input_agent
         → notification_agent (Claude email + Gmail)
+    triage_agent: after 3 consecutive sensor anomaly ticks (see SENSOR_STREAK_EMAIL_THRESHOLD), announces + emails
+        emergency contacts immediately (no voice ack required); escalation_agent skips duplicate deferral if notified.
     voice_agent: ElevenLabs TTS + OpenCV tick frames → base64 → Claude locate + spatial_service
 
     heartbeat_agent  — monitors sensor_agent liveness
     learning_agent   — 24-hour behavioral schema refresh
     report_agent     — 7-day weekly digest email
-    dashboard_agent  — ASI:One chat gateway (Agentverse mailbox)
+    dashboard_agent  — voice / chat queries (local bureau by default; set HOMEPULSE_DASHBOARD_MAILBOX for ASI:One only)
 """
 import logging
 import sys
@@ -82,6 +84,7 @@ print(f"[run_agents] uAgents Bureau HTTP port: {_BUREAU_PORT} (set UAGENTS_BUREA
 
 from uagents import Bureau
 
+from agents.noop_registration import AlmanacRegistrationSkipped
 from agents.sensor_agent       import sensor_agent
 from agents.triage_agent       import triage_agent
 from agents.history_agent      import history_agent
@@ -96,7 +99,14 @@ from agents.dashboard_agent    import dashboard_agent
 from agents.voice_agent        import voice_agent
 from agents.voice_input_agent  import voice_input_agent
 
-bureau = Bureau(port=_BUREAU_PORT)
+_bureau_kw: dict = {"port": _BUREAU_PORT}
+if settings.UAGENTS_SKIP_ALMANAC_REGISTRATION:
+    _bureau_kw["registration_policy"] = AlmanacRegistrationSkipped()
+    logging.getLogger("run_agents").info(
+        "Almanac batch registration skipped (UAGENTS_SKIP_ALMANAC_REGISTRATION). "
+        "Set to false in .env if you need Agentverse registry updates from this bureau."
+    )
+bureau = Bureau(**_bureau_kw)
 
 bureau.add(sensor_agent)
 bureau.add(triage_agent)

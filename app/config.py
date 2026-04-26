@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     AGENTVERSE_KEY: str = ""
     # uAgents Bureau HTTP port (default 8002). If busy, run_agents scans a small range.
     UAGENTS_BUREAU_PORT: int = 8002
+    # When True, skip Fetch.ai Almanac batch registration on bureau startup (stops timeout spam;
+    # agents in the same process still message each other via the local dispatcher).
+    UAGENTS_SKIP_ALMANAC_REGISTRATION: bool = True
+    # When True, dashboard_agent uses Agentverse mailbox (ASI:One / standalone dashboard script).
+    # When False (default), it shares the bureau HTTP endpoint — required for reliable voice → dashboard in run_agents.
+    HOMEPULSE_DASHBOARD_MAILBOX: bool = False
 
     # Anthropic Claude API
     ANTHROPIC_API_KEY: str = ""
@@ -47,6 +53,12 @@ class Settings(BaseSettings):
     # emergency_contacts[].email on the DEFAULT_USER_ID user document.
     EMERGENCY_NOTIFY_EMAIL: str = ""
     CANCEL_WINDOW_SECONDS: int = 60
+    # Consecutive sensor anomaly ticks before triage announces + emails emergency contacts (no voice ack required).
+    SENSOR_STREAK_EMAIL_THRESHOLD: int = 3
+    # Minimum seconds between full triage pipelines for the same event_type (stops 5s serial spam / "loops"). 0 = off.
+    SENSOR_ANOMALY_COOLDOWN_SECONDS: float = 90.0
+    # One MongoDB "slot" per investigating triage; vision + preview-snapshot share it (no stacked Cloudinary uploads).
+    SNAPSHOT_CLOUDINARY_GATE_ENABLED: bool = True
     THRESHOLD_MULTIPLIER: float = 2.5
     CALIBRATION_HOURS: int = 48
     HEARTBEAT_TIMEOUT_SECONDS: int = 120

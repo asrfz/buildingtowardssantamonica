@@ -37,6 +37,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 
 from app.config import settings
@@ -62,6 +63,19 @@ class SpeechRequest:
 _queue: queue.Queue[SpeechRequest | None] = queue.Queue()
 _worker: threading.Thread | None = None
 _ready = threading.Event()
+
+# Wake-word mic / STT should ignore audio while we play TTS (speaker bleed) + short tail for room reverb.
+_tts_speaking = threading.Event()
+_stt_suppress_until: float = 0.0
+# Seconds after playback ends before listening resumes (tune if mic still picks up tail).
+TTS_STT_TAIL_COOLDOWN_SEC = 0.95
+
+
+def should_suppress_voice_capture() -> bool:
+    """True while assistant TTS is playing or within tail cooldown — drop mic utterances."""
+    if _tts_speaking.is_set():
+        return True
+    return time.monotonic() < _stt_suppress_until
 
 
 def _play_mp3_bytes(audio_bytes: bytes) -> None:
@@ -89,6 +103,7 @@ def _tts_worker() -> None:
     Daemon thread: owns the pygame mixer and the ElevenLabs client for their
     full lifetime. Processes SpeechRequests sequentially so phrases never overlap.
     """
+    global _stt_suppress_until
     no_api_key = not (settings.ELEVENLABS_API_KEY or "").strip()
     if no_api_key:
         logger.warning("[TTS] ELEVENLABS_API_KEY not set — voice guidance will only log, not play audio")
@@ -132,6 +147,7 @@ def _tts_worker() -> None:
             break
 
         try:
+            _tts_speaking.set()
             # SDK 2.x: convert() always returns Iterator[bytes] — join into one buffer
             audio_bytes = b"".join(
                 client.text_to_speech.convert(
@@ -150,6 +166,8 @@ def _tts_worker() -> None:
             logger.warning(f"[TTS] ElevenLabs speak failed: {exc}")
 
         finally:
+            _tts_speaking.clear()
+            _stt_suppress_until = time.monotonic() + TTS_STT_TAIL_COOLDOWN_SEC
             _queue.task_done()
 
 
@@ -183,6 +201,7 @@ async def speak_async(text: str, *, correction: bool = False) -> None:
 
 def stop_all() -> None:
     """Drain the speech queue (e.g. when a correction resolves mid-phrase)."""
+    global _stt_suppress_until
     while not _queue.empty():
         try:
             _queue.get_nowait()
@@ -195,3 +214,5 @@ def stop_all() -> None:
             pygame.mixer.music.stop()
     except Exception:
         pass
+    _tts_speaking.clear()
+    _stt_suppress_until = max(_stt_suppress_until, time.monotonic() + TTS_STT_TAIL_COOLDOWN_SEC)

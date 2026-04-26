@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.config import settings
-from app.services.vector_service import EMBEDDING_FIELDS, _FALLBACK
+from app.services.vector_service import EMBEDDING_FIELDS
+from app.services.baseline_stats import stat as baseline_stat
 from app.services.incident_service import _RISK_SCORES
 from app.utils.event_labels import label_for_event_type
 
@@ -39,8 +40,9 @@ def _make_embedding(temp, sound, mag, ax, ay, az, pressure):
     }
     vec = []
     for payload_field, baseline_key in EMBEDDING_FIELDS:
-        stats = _FALLBACK[baseline_key]
-        mean = float(stats["mean"]); std = float(stats["std_dev"]) or 1.0
+        st = baseline_stat(None, baseline_key)
+        mean = float(st["mean"])
+        std = float(st["std_dev"]) or 1.0
         vec.append((raw[payload_field] - mean) / std)
     magnitude = math.sqrt(sum(v * v for v in vec)) or 1.0
     return [round(v / magnitude, 6) for v in vec]

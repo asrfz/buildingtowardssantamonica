@@ -1,7 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from bson import ObjectId
+from bson.errors import InvalidId
 from app.database import get_db
 from app.models.event import EventConfirmRequest, EventDetail, EventResponse
+from app.services.camera_snapshot_service import CAMERA_SNAPSHOTS_COLL
 from app.services.learning_service import record_outcome
 
 router = APIRouter()
@@ -11,6 +13,41 @@ def _serialize(doc: dict) -> dict:
     doc["event_id"] = str(doc.pop("_id"))
     doc["user_id"] = str(doc["user_id"])
     return doc
+
+
+@router.get("/snapshots/{user_id}")
+async def list_camera_snapshots(user_id: str, limit: int = Query(48, ge=1, le=100)) -> dict:
+    """
+    Bureau camera frames stored in MongoDB (preview uploads + vision pipeline).
+    Each item has Cloudinary URLs for the frontend gallery.
+    """
+    db = get_db()
+    try:
+        oid = ObjectId(user_id)
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid user_id") from None
+    docs = await db[CAMERA_SNAPSHOTS_COLL].find(
+        {"user_id": oid},
+        sort=[("created_at", -1)],
+    ).to_list(limit)
+    snapshots = []
+    for d in docs:
+        eid = d.get("event_id")
+        snapshots.append(
+            {
+                "snapshot_id": str(d["_id"]),
+                "url": d.get("url", ""),
+                "cropped_url": d.get("cropped_url", ""),
+                "public_id": d.get("public_id", ""),
+                "source": d.get("source", ""),
+                "event_id": str(eid) if eid else None,
+                "event_type": d.get("event_type", ""),
+                "width": d.get("width"),
+                "height": d.get("height"),
+                "created_at": d["created_at"].isoformat() if d.get("created_at") else "",
+            }
+        )
+    return {"snapshots": snapshots}
 
 
 @router.get("/{user_id}")

@@ -42,14 +42,42 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [wsLines, setWsLines] = useState<string[]>([])
   const [alerts, setAlerts] = useState<LiveAlert[]>([])
-  const [cameraError, setCameraError] = useState('')
-  const [cameraReady, setCameraReady] = useState(false)
-  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null)
-  const [cameraRetryToken, setCameraRetryToken] = useState(0)
+  /** Events with Cloudinary URLs from the bureau (vision_agent → Mongo). */
+  const [cloudinaryClips, setCloudinaryClips] = useState<
+    {
+      event_id: string
+      event_type: string
+      severity: string
+      cropped_image_url: string | null
+      raw_image_url: string | null
+      detected_at: string
+    }[]
+  >([])
+  const [clipsLoading, setClipsLoading] = useState(false)
+  const [clipsError, setClipsError] = useState('')
+  const [snapshotGallery, setSnapshotGallery] = useState<
+    {
+      snapshot_id: string
+      url: string
+      cropped_url: string
+      source: string
+      event_id: string | null
+      event_type: string
+      created_at: string
+    }[]
+  >([])
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false)
+  const [snapshotsError, setSnapshotsError] = useState('')
+  const [savingSnapshot, setSavingSnapshot] = useState(false)
+  /** Cache-bust query for GET /sensor/preview-jpeg (no Cloudinary required for this card). */
+  const [bureauPreviewTick, setBureauPreviewTick] = useState(() => Date.now())
+  const [bureauPreviewUpdated, setBureauPreviewUpdated] = useState('')
+  const [bureauPreviewLoading, setBureauPreviewLoading] = useState(true)
+  const [bureauPreviewError, setBureauPreviewError] = useState('')
+  const bureauPreviewSrc = `${apiBase()}/sensor/preview-jpeg?t=${bureauPreviewTick}`
+  const bumpBureauPreview = useCallback(() => setBureauPreviewTick(Date.now()), [])
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const cameraReadyRef = useRef(false)
 
   useEffect(() => {
     localStorage.setItem(USER_STORAGE, userId)
@@ -78,110 +106,122 @@ export default function App() {
     }
   }, [])
 
-  // Camera only while Testing tab is mounted (video element exists). Cleans up tracks on tab change / unmount.
-  useEffect(() => {
-    if (tab !== 'console') {
-      setMediaStream((prev) => {
-        prev?.getTracks().forEach((t) => t.stop())
-        return null
-      })
-      cameraReadyRef.current = false
-      setCameraReady(false)
+  const fetchCloudinaryClips = useCallback(async () => {
+    const uid = userId.trim()
+    if (!uid) {
+      setCloudinaryClips([])
+      setClipsLoading(false)
       return
     }
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError('Camera API not available (use HTTPS or localhost, not a plain IP over HTTP).')
-      return
-    }
-
-    let cancelled = false
-    let stream: MediaStream | null = null
-    setCameraError('')
-
-    ;(async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 1280 } },
-          audio: false,
-        })
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop())
-          return
-        }
-        setMediaStream(stream)
-      } catch (e: unknown) {
-        if (cancelled) return
-        const name = e instanceof DOMException ? e.name : ''
-        if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-          setCameraError(
-            'Camera blocked — click “Retry camera” below, allow the site in the browser lock icon, and disable “Block” for camera.',
-          )
-        } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-          setCameraError('No camera found on this device.')
-        } else {
-          const msg = e instanceof Error ? e.message : String(e)
-          setCameraError(`Camera error: ${msg}`)
-        }
-        setMediaStream(null)
-        cameraReadyRef.current = false
-        setCameraReady(false)
+    setClipsLoading(true)
+    setClipsError('')
+    const ac = new AbortController()
+    const to = window.setTimeout(() => ac.abort(), 15_000)
+    try {
+      const r = await fetch(`${apiBase()}/events/${encodeURIComponent(uid)}`, { signal: ac.signal })
+      if (!r.ok) {
+        setClipsError(`HTTP ${r.status}`)
+        setCloudinaryClips([])
+        return
       }
-    })()
-
-    return () => {
-      cancelled = true
-      stream?.getTracks().forEach((t) => t.stop())
-      setMediaStream((prev) => {
-        prev?.getTracks().forEach((t) => t.stop())
-        return null
-      })
-      cameraReadyRef.current = false
-      setCameraReady(false)
+      const j = (await r.json()) as { events?: Record<string, unknown>[] }
+      const list = j.events ?? []
+      const withMedia = list
+        .map((e) => {
+          const id = String(e.event_id ?? '')
+          const crop = (e.cropped_image_url as string | undefined) || null
+          const raw = (e.raw_image_url as string | undefined) || null
+          return {
+            event_id: id,
+            event_type: String(e.event_type ?? ''),
+            severity: String(e.severity ?? ''),
+            cropped_image_url: crop,
+            raw_image_url: raw,
+            detected_at: e.detected_at != null ? String(e.detected_at) : '',
+          }
+        })
+        .filter((e) => (e.cropped_image_url || e.raw_image_url) && e.event_id)
+        .slice(0, 24)
+      setCloudinaryClips(withMedia)
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        setClipsError('Request timed out — is uvicorn running on port 8000?')
+      } else {
+        setClipsError(e instanceof Error ? e.message : String(e))
+      }
+      setCloudinaryClips([])
+    } finally {
+      window.clearTimeout(to)
+      setClipsLoading(false)
     }
-  }, [tab, cameraRetryToken])
+  }, [userId])
 
-  // Attach stream to <video> when ref + stream exist (fixes race where getUserMedia resolved before ref was set).
+  const fetchSnapshotGallery = useCallback(async () => {
+    const uid = userId.trim()
+    if (!uid) {
+      setSnapshotGallery([])
+      setSnapshotsLoading(false)
+      return
+    }
+    setSnapshotsLoading(true)
+    setSnapshotsError('')
+    const ac = new AbortController()
+    const to = window.setTimeout(() => ac.abort(), 15_000)
+    try {
+      const r = await fetch(`${apiBase()}/events/snapshots/${encodeURIComponent(uid)}`, {
+        signal: ac.signal,
+      })
+      if (!r.ok) {
+        setSnapshotsError(`HTTP ${r.status}`)
+        setSnapshotGallery([])
+        return
+      }
+      const j = (await r.json()) as {
+        snapshots?: {
+          snapshot_id: string
+          url: string
+          cropped_url: string
+          source: string
+          event_id: string | null
+          event_type: string
+          created_at: string
+        }[]
+      }
+      setSnapshotGallery(j.snapshots ?? [])
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        setSnapshotsError('Request timed out — is uvicorn on port 8000?')
+      } else {
+        setSnapshotsError(e instanceof Error ? e.message : String(e))
+      }
+      setSnapshotGallery([])
+    } finally {
+      window.clearTimeout(to)
+      setSnapshotsLoading(false)
+    }
+  }, [userId])
+
   useEffect(() => {
     if (tab !== 'console') return
-    const el = videoRef.current
-    if (!el || !mediaStream) {
-      cameraReadyRef.current = false
-      setCameraReady(false)
-      return
-    }
-    el.srcObject = mediaStream
-    const onMeta = () => {
-      cameraReadyRef.current = true
-      setCameraReady(true)
-      setCameraError('')
-    }
-    el.addEventListener('loadedmetadata', onMeta)
-    return () => {
-      el.removeEventListener('loadedmetadata', onMeta)
-    }
-  }, [mediaStream, tab])
+    void fetchCloudinaryClips()
+    const tick = setInterval(() => void fetchCloudinaryClips(), 45_000)
+    return () => clearInterval(tick)
+  }, [tab, fetchCloudinaryClips])
 
-  // Capture a frame from the live video and POST it to /vision/frame
-  const captureAndPostFrame = useCallback(async (eventId: string) => {
-    const video = videoRef.current
-    if (!cameraReadyRef.current || !video || video.videoWidth === 0) return
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    canvas.getContext('2d')?.drawImage(video, 0, 0)
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
-    const image_b64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '')
-    try {
-      await fetch(`${apiBase()}/vision/frame`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: eventId, image_b64 }),
-      })
-    } catch (e) {
-      console.error('[HomePulse] Frame POST failed:', e)
-    }
-  }, [])
+  useEffect(() => {
+    if (tab !== 'console') return
+    void fetchSnapshotGallery()
+    const tick = setInterval(() => void fetchSnapshotGallery(), 30_000)
+    return () => clearInterval(tick)
+  }, [tab, fetchSnapshotGallery])
+
+  useEffect(() => {
+    if (tab !== 'console') return
+    bumpBureauPreview()
+    // ~2.5s: API reuses a sub-second frame cache so this stays light on the webcam lock.
+    const tick = setInterval(bumpBureauPreview, 2500)
+    return () => clearInterval(tick)
+  }, [tab, bumpBureauPreview])
 
   // Single WebSocket + dedupe alerts by event_id (multiple tabs / strict mode / reconnects used to duplicate cards).
   useEffect(() => {
@@ -204,9 +244,7 @@ export default function App() {
             data?: Record<string, string | undefined>
             text?: string
           }
-          if (msg.type === 'capture' && msg.data?.event_id) {
-            captureAndPostFrame(msg.data.event_id)
-          } else if (msg.type === 'alert' && msg.data) {
+          if (msg.type === 'alert' && msg.data) {
             const eventId = typeof msg.data.event_id === 'string' ? msg.data.event_id : ''
             const label = String(msg.data.label || msg.data.event_type || 'Alert')
             const severity = String(msg.data.severity || 'MEDIUM').toUpperCase()
@@ -219,6 +257,9 @@ export default function App() {
               const without = prev.filter((a) => a.id !== id)
               return [next, ...without].slice(0, 6)
             })
+            void fetchCloudinaryClips()
+            void fetchSnapshotGallery()
+            bumpBureauPreview()
           }
         } catch {
           /* ignore */
@@ -242,11 +283,43 @@ export default function App() {
       wsRef.current?.close()
       wsRef.current = null
     }
-  }, [captureAndPostFrame])
+  }, [fetchCloudinaryClips, fetchSnapshotGallery, bumpBureauPreview])
 
   const pushLog = useCallback((line: string) => {
     setLog((prev) => [...prev.slice(-80), `[${new Date().toLocaleTimeString()}] ${line}`])
   }, [])
+
+  const saveSnapshotToMongo = useCallback(async () => {
+    const uid = userId.trim()
+    if (!uid) {
+      pushLog('Set User ID to save snapshots to MongoDB.')
+      return
+    }
+    setSavingSnapshot(true)
+    try {
+      const qs = new URLSearchParams({ user_id: uid })
+      const r = await fetch(`${apiBase()}/sensor/preview-snapshot?${qs}`, { method: 'POST' })
+      if (!r.ok) {
+        const t = await r.text()
+        let msg = t.slice(0, 400)
+        try {
+          const j = JSON.parse(t) as { detail?: unknown }
+          if (typeof j.detail === 'string') msg = j.detail
+        } catch {
+          /* plain text */
+        }
+        pushLog(`Save snapshot FAIL (${r.status}): ${msg}`)
+        return
+      }
+      const j = (await r.json()) as { url?: string; snapshot_id?: string }
+      pushLog(`Snapshot saved — Mongo id ${j.snapshot_id?.slice(-8) ?? '?'} (Cloudinary)`)
+      void fetchSnapshotGallery()
+    } catch (e) {
+      pushLog(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingSnapshot(false)
+    }
+  }, [userId, fetchSnapshotGallery, pushLog])
 
   const run = useCallback(
     async (label: string, path: string, init?: RequestInit) => {
@@ -328,9 +401,9 @@ export default function App() {
         <div>
           <h1>HomePulse — Dev console</h1>
           <p className="sub">
-            Test FastAPI + agents: simulate sensors, list events, search, patterns, incidents, caregiver Q&amp;A.
-            Run API: <code>uvicorn app.main:app --reload --port 8000</code> · Run agents:{' '}
-            <code>python run_agents.py</code>
+            Test FastAPI + agents: bureau camera preview (OpenCV → Cloudinary), alert clips from <code>/events</code>, search,
+            patterns, incidents, caregiver Q&amp;A. Run API: <code>uvicorn app.main:app --reload --port 8000</code> ·
+            Run agents: <code>python run_agents.py</code>
           </p>
         </div>
         <nav className="tabs">
@@ -383,45 +456,224 @@ export default function App() {
 
           <section className="card camera-card">
             <h2>
-              Camera Feed
-              {cameraReady && (
-                <span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#22c55e', marginLeft: 8 }}>● live</span>
-              )}
+              Bureau camera preview
+              {bureauPreviewUpdated && !bureauPreviewError ? (
+                <span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#22c55e', marginLeft: 8 }}>
+                  ● OpenCV @ API
+                </span>
+              ) : null}
             </h2>
-            {cameraError ? <p className="warn">{cameraError}</p> : null}
-            {!cameraError && (
-              <p className="hint">
-                {cameraReady
-                  ? 'Active — frame sent to vision agent when an irregularity is detected.'
-                  : 'Starting camera… If blocked, use Retry and allow camera for this site.'}
+            <p className="hint">
+              Live JPEG from <code>GET /sensor/preview-jpeg</code> (same camera as{' '}
+              <code>live-frame-b64</code>). No Cloudinary needed for this tile. Keep <code>uvicorn</code> on :8000; if
+              the webcam is busy elsewhere, set <code>WEBCAM_INDEX</code> or stop other camera apps.
+            </p>
+            {bureauPreviewError ? <p className="warn">{bureauPreviewError}</p> : null}
+            <div className="btn-row" style={{ marginBottom: 8 }}>
+              <button type="button" disabled={bureauPreviewLoading} onClick={bumpBureauPreview}>
+                {bureauPreviewLoading ? 'Refreshing…' : 'Refresh now'}
+              </button>
+              <button
+                type="button"
+                disabled={savingSnapshot || !userId.trim()}
+                title="Uses one upload slot (same pool as vision): trigger an investigating anomaly first, or you get HTTP 429. Dev API: ?force=true bypass."
+                onClick={() => void saveSnapshotToMongo()}
+              >
+                {savingSnapshot ? 'Saving…' : 'Save snapshot to gallery'}
+              </button>
+            </div>
+            {bureauPreviewUpdated ? (
+              <p className="hint" style={{ marginTop: -4 }}>
+                Last frame loaded: {bureauPreviewUpdated}
               </p>
+            ) : null}
+            <div className="camera-stage">
+              <img
+                key={bureauPreviewTick}
+                src={bureauPreviewSrc}
+                alt="Bureau camera preview"
+                className="camera-feed-video"
+                style={{ width: '100%', height: 'auto', display: 'block', objectFit: 'contain' }}
+                onLoadStart={() => {
+                  setBureauPreviewLoading(true)
+                  setBureauPreviewError('')
+                }}
+                onLoad={() => {
+                  setBureauPreviewLoading(false)
+                  setBureauPreviewError('')
+                  setBureauPreviewUpdated(new Date().toLocaleTimeString())
+                }}
+                onError={() => {
+                  setBureauPreviewLoading(false)
+                  setBureauPreviewError(
+                    'Could not load camera preview — is uvicorn on port 8000? Check WEBCAM_INDEX, and that no other app has locked the camera (e.g. only one OpenCV consumer on Windows).',
+                  )
+                }}
+              />
+            </div>
+          </section>
+
+          <section className="card camera-card">
+            <h2>Vision clips (Cloudinary)</h2>
+            <p className="hint">
+              After triage + vision, event records get <code>cropped_image_url</code> / <code>raw_image_url</code>. Loaded
+              from <code>GET /events/&#123;userId&#125;</code> (API on :8000). The preview above is the live bureau FOV;
+              this grid is alert-specific crops.
+            </p>
+            {clipsError ? <p className="warn">{clipsError}</p> : null}
+            <div className="btn-row" style={{ marginBottom: 8 }}>
+              <button type="button" disabled={clipsLoading || !userId.trim()} onClick={() => void fetchCloudinaryClips()}>
+                {clipsLoading ? 'Loading…' : 'Refresh clips'}
+              </button>
+            </div>
+            {!userId.trim() ? (
+              <p className="hint">Set User ID below to load clips.</p>
+            ) : cloudinaryClips.length === 0 && !clipsLoading ? (
+              <p className="hint">No events with images yet. Trigger the pipeline (simulate or Arduino) with valid Cloudinary in API <code>.env</code>.</p>
+            ) : (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                  gap: 12,
+                  marginTop: 8,
+                }}
+              >
+                {cloudinaryClips.map((c) => {
+                  const src = c.cropped_image_url || c.raw_image_url || ''
+                  const sev = SEV_COLORS[c.severity] ?? SEV_COLORS.MEDIUM
+                  return (
+                    <figure
+                      key={c.event_id}
+                      style={{
+                        margin: 0,
+                        border: `1px solid ${sev.border}`,
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        background: sev.bg,
+                      }}
+                    >
+                      <img src={src} alt={c.event_type} style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }} />
+                      <figcaption style={{ padding: '8px 10px', fontSize: '0.75rem', color: sev.text }}>
+                        <strong>{c.event_type}</strong> · {c.severity}
+                        <br />
+                        <span className="mono" style={{ opacity: 0.85 }}>
+                          {c.event_id.slice(-8)}
+                        </span>
+                        {c.detected_at ? (
+                          <>
+                            <br />
+                            {c.detected_at}
+                          </>
+                        ) : null}
+                      </figcaption>
+                    </figure>
+                  )
+                })}
+              </div>
             )}
+          </section>
+
+          <section className="card camera-card">
+            <h2>Snapshot gallery (MongoDB + Cloudinary)</h2>
+            <p className="hint">
+              Stored in <code>camera_snapshots</code> and listed via <code>GET /events/snapshots/&#123;userId&#125;</code>.
+              Vision pipeline rows and manual <strong>Save snapshot to gallery</strong> both appear here.
+            </p>
+            {snapshotsError ? <p className="warn">{snapshotsError}</p> : null}
             <div className="btn-row" style={{ marginBottom: 8 }}>
               <button
                 type="button"
-                onClick={() => {
-                  setCameraError('')
-                  setMediaStream((prev) => {
-                    prev?.getTracks().forEach((t) => t.stop())
-                    return null
-                  })
-                  cameraReadyRef.current = false
-                  setCameraReady(false)
-                  setCameraRetryToken((n) => n + 1)
-                }}
+                disabled={snapshotsLoading || !userId.trim()}
+                onClick={() => void fetchSnapshotGallery()}
               >
-                Retry camera
+                {snapshotsLoading ? 'Loading…' : 'Refresh gallery'}
               </button>
             </div>
-            <div className="camera-stage">
-              <video
-                ref={videoRef}
-                className="camera-feed-video"
-                autoPlay
-                playsInline
-                muted
-              />
-            </div>
+            {!userId.trim() ? (
+              <p className="hint">Set User ID below to load snapshots.</p>
+            ) : snapshotGallery.length === 0 && !snapshotsLoading ? (
+              <p className="hint">
+                No snapshots yet. Use <strong>Save snapshot to gallery</strong> on the bureau preview, or run triage + vision
+                with Cloudinary configured.
+              </p>
+            ) : (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                  gap: 12,
+                  marginTop: 8,
+                }}
+              >
+                {snapshotGallery.map((s) => {
+                  const thumb = (s.cropped_url || s.url || '').trim()
+                  const badgeBg = s.source === 'vision' ? '#1e3a5f' : '#3d3518'
+                  const badgeFg = '#e8eef6'
+                  return (
+                    <figure
+                      key={s.snapshot_id}
+                      style={{
+                        margin: 0,
+                        border: '1px solid var(--border, #333)',
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        background: 'var(--card-inner, #1a1a1a)',
+                      }}
+                    >
+                      {thumb ? (
+                        <a href={s.url || thumb} target="_blank" rel="noreferrer">
+                          <img
+                            src={thumb}
+                            alt={s.event_type || s.source}
+                            style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
+                          />
+                        </a>
+                      ) : (
+                        <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', opacity: 0.7 }}>
+                          No image URL
+                        </div>
+                      )}
+                      <figcaption style={{ padding: '8px 10px', fontSize: '0.75rem' }}>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '2px 8px',
+                            borderRadius: 4,
+                            background: badgeBg,
+                            color: badgeFg,
+                            fontSize: '0.7rem',
+                            marginBottom: 6,
+                          }}
+                        >
+                          {s.source}
+                        </span>
+                        <br />
+                        <strong>{s.event_type || '—'}</strong>
+                        <br />
+                        <span className="mono" style={{ opacity: 0.85 }}>
+                          {s.snapshot_id.slice(-8)}
+                        </span>
+                        {s.event_id ? (
+                          <>
+                            <br />
+                            <span className="mono" style={{ opacity: 0.75 }}>
+                              evt {s.event_id.slice(-8)}
+                            </span>
+                          </>
+                        ) : null}
+                        {s.created_at ? (
+                          <>
+                            <br />
+                            {s.created_at}
+                          </>
+                        ) : null}
+                      </figcaption>
+                    </figure>
+                  )
+                })}
+              </div>
+            )}
           </section>
 
           <section className="card">

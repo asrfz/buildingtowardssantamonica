@@ -94,7 +94,13 @@ def _upload_and_crop_sync(frame: np.ndarray, event_id: str, zone: dict) -> dict:
     )[0]
 
     logger.info(f"Cloudinary upload complete for event {event_id} — zone={zone.get('name', '?')}")
-    return {"raw_url": raw["secure_url"], "cropped_url": cropped_url}
+    return {
+        "raw_url": raw["secure_url"],
+        "cropped_url": cropped_url,
+        "width": raw.get("width"),
+        "height": raw.get("height"),
+        "public_id": raw.get("public_id", ""),
+    }
 
 
 def _upload_and_crop_from_b64_sync(image_b64: str, event_id: str, zone: dict) -> dict:
@@ -118,7 +124,13 @@ def _upload_and_crop_from_b64_sync(image_b64: str, event_id: str, zone: dict) ->
         transformation=transformation,
     )[0]
     logger.info(f"Cloudinary upload complete for event {event_id} — zone={zone.get('name', '?')}")
-    return {"raw_url": raw["secure_url"], "cropped_url": cropped_url}
+    return {
+        "raw_url": raw["secure_url"],
+        "cropped_url": cropped_url,
+        "width": raw.get("width"),
+        "height": raw.get("height"),
+        "public_id": raw.get("public_id", ""),
+    }
 
 
 async def upload_and_crop_from_b64(image_b64: str, event_id: str, zone: dict) -> dict:

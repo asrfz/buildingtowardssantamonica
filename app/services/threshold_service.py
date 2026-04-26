@@ -49,6 +49,12 @@ _GLOBAL_DEFAULTS = {
         "alert_low":   990.0,
         "multiplier":  3.0,
     },
+    "accel_magnitude": {
+        "multiplier": 2.8,
+    },
+    "gyro_magnitude": {
+        "multiplier": 2.8,
+    },
     "magnetic_state": {
         "normal":      0,
         "alert":       1,

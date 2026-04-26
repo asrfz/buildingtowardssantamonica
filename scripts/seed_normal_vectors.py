@@ -24,7 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.config import settings
-from app.services.vector_service import EMBEDDING_FIELDS, _FALLBACK
+from app.services.vector_service import EMBEDDING_FIELDS
+from app.services.baseline_stats import stat as baseline_stat
 
 READINGS_PER_USER = 200
 
@@ -58,15 +59,15 @@ async def seed() -> None:
             })
 
             def sample(baseline_key: str) -> float:
-                stats = (bl or {}).get(baseline_key, _FALLBACK[baseline_key])
+                st = baseline_stat(bl, baseline_key)
                 return random.gauss(
-                    float(stats["mean"]),
-                    float(stats["std_dev"]) * 0.5,
+                    float(st["mean"]),
+                    float(st["std_dev"]) * 0.5,
                 )
 
             payload_dict = {
                 "temperature_c":  round(sample("temperature"), 2),
-                "sound_level":    max(0, min(1023, int(sample("sound_level")))),
+                "sound_level":    max(0, min(65535, int(sample("sound_level")))),
                 "magnetic_state": 0,
                 "accel_x":        round(sample("accel_x"), 4),
                 "accel_y":        round(sample("accel_y"), 4),
@@ -86,9 +87,9 @@ async def seed() -> None:
             }
             vec = []
             for payload_field, baseline_key in EMBEDDING_FIELDS:
-                stats = (bl or {}).get(baseline_key, _FALLBACK[baseline_key])
-                mean = float(stats.get("mean", 0.0))
-                std  = float(stats.get("std_dev", 1.0)) or 1.0
+                st = baseline_stat(bl, baseline_key)
+                mean = float(st["mean"])
+                std = float(st["std_dev"]) or 1.0
                 vec.append((raw[payload_field] - mean) / std)
             magnitude = math.sqrt(sum(v * v for v in vec)) or 1.0
             embedding = [round(v / magnitude, 6) for v in vec]

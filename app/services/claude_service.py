@@ -24,6 +24,34 @@ def _parse_json(text: str) -> dict:
     return json.loads(text)
 
 
+def _normalize_llm_html_email_body(raw: str) -> str:
+    """
+    Claude sometimes returns markdown mixed into "HTML" emails: ```html fences, **bold**, etc.
+    Gmail renders HTML only — strip artifacts so notifications look correct.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return text
+
+    fenced = re.match(
+        r"^```(?:html|HTML)?\s*\r?\n?(.*)\r?\n?```\s*$",
+        text,
+        re.DOTALL,
+    )
+    if fenced:
+        text = fenced.group(1).strip()
+    else:
+        text = re.sub(r"^```(?:html|HTML)?\s*\r?\n?", "", text, count=1)
+        text = re.sub(r"\r?\n?```\s*$", "", text, count=1)
+        text = text.strip()
+
+    # Markdown **phrase** → <strong>phrase</strong>
+    text = re.sub(r"\*\*([^*\n]+?)\*\*", r"<strong>\1</strong>", text)
+    # Stray lines that are only a fence
+    text = re.sub(r"^\s*```(?:html|HTML)?\s*$", "", text, flags=re.MULTILINE)
+    return text.strip()
+
+
 # ── Triage ──────────────────────────────────────────────────────────────────
 
 def _triage_event_sync(
@@ -90,16 +118,23 @@ def _reason_about_event_sync(
     image_b64: str | None = None,
     image_media_type: str = "image/jpeg",
     triage_event_type: str = "",
+    crop_spatially_trusted: bool = True,
 ) -> dict:
     has_image = bool(image_b64 and image_media_type in _MEDIA_ALLOW)
     locked_type = (triage_event_type or "").strip() or "UNCONFIRMED_SENSOR_EVENT"
+
+    crop_warning = ""
+    if has_image and not crop_spatially_trusted:
+        crop_warning = """
+**Image caveat:** This crop is aligned to a stored room map, not proof that a specific object (sink, stove, fridge, etc.) caused the alert or appears as labeled. Only describe objects or layouts you can actually see. For sound-like alerts, suggest ordinary explanations when appropriate (TV, music, speaker, phone, another person, pet, HVAC, outside noise) without insisting on a particular source you cannot verify.
+"""
 
     if has_image:
         prompt = f"""You are HomePulse, a household safety AI for elderly users.
 
 Analyze this household anomaly and determine the appropriate response.
 You can see the cropped alert image attached.
-
+{crop_warning}
 Sensor data: {sensor_data}
 Deviation: {deviation_score:.1f}x above baseline
 Time: {hour}:00 {day_type}
@@ -127,7 +162,11 @@ Sensor data: {sensor_data}
 Deviation: {deviation_score:.1f}x above baseline
 Time: {hour}:00 {day_type}
 
-Write a cautious recommended_action: suggest the user visually check the relevant area (doors, noise source, temperature) without claiming a specific appliance by name unless locked_type already names one.
+Write ONE short recommended_action that matches locked_type:
+- If locked_type is DOOR_SENSOR_ANOMALY: ask them to check doors, windows, and entryways — do NOT talk about unexplained noise or sound levels unless the sensor data clearly shows sound.
+- If locked_type is SOUND_ANOMALY: ask them to listen and check the area where noise was unusual — do NOT blame doors unless sensor data shows door/magnetic.
+- If locked_type is TEMPERATURE_ANOMALY: focus on heat/cold and safe checks.
+Otherwise stay aligned with locked_type. Do not use generic "walk through your home for any sound" when the alert is door- or motion-class.
 
 Respond with JSON only:
 {{
@@ -192,6 +231,7 @@ async def reason_about_event(
     hour: int,
     day_type: str,
     triage_event_type: str = "",
+    crop_spatially_trusted: bool = True,
 ) -> dict:
     b64, media = await _fetch_monitor_image(image_url)
     return await asyncio.to_thread(
@@ -206,6 +246,7 @@ async def reason_about_event(
         b64,
         media,
         triage_event_type,
+        crop_spatially_trusted,
     )
 
 
@@ -236,14 +277,21 @@ Requirements:
 - Include severity badge (red for HIGH/CRITICAL, orange for MEDIUM, yellow for LOW)
 - Include cancel option if not CRITICAL
 - Keep it concise — elderly users should understand it at a glance
-- Return only the HTML body content, no <html> or <body> tags"""
+- Return only the HTML body fragment: no outer <html>, <body>, or <!DOCTYPE>
+- Valid HTML only: use tags like <div>, <p>, <strong>, <span>, <img> with inline styles
+- Do NOT wrap the answer in markdown code fences (no ``` or ```html)
+- Do NOT use markdown emphasis (no ** or __); use <strong>...</strong> instead"""
 
     response = _client.messages.create(
         model=MODEL,
         max_tokens=800,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text
+    raw = response.content[0].text
+    normalized = _normalize_llm_html_email_body(raw)
+    if normalized != (raw or "").strip():
+        logger.info("Alert email: normalized LLM output (markdown fences or ** removed)")
+    return normalized
 
 
 async def write_alert_email(
@@ -285,14 +333,16 @@ Requirements:
 - Highlight any recurring issues
 - Give 1-2 gentle actionable recommendations
 - End on a reassuring note
-- Return only HTML body content"""
+- Return only HTML body fragment (no <html>/<body> wrapper)
+- No markdown fences or **bold** — use <strong> and real HTML tags only"""
 
     response = _client.messages.create(
         model=MODEL,
         max_tokens=600,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text
+    raw = response.content[0].text
+    return _normalize_llm_html_email_body(raw)
 
 
 async def write_weekly_digest(
@@ -307,6 +357,29 @@ async def write_weekly_digest(
 
 # ── ASI:One dashboard query ──────────────────────────────────────────────────
 
+def compact_user_profile_for_prompt(user: dict | None) -> dict:
+    """Subset of the users collection document safe to pass into the dashboard prompt."""
+    if not user:
+        return {}
+    contacts = user.get("emergency_contacts") or []
+    simplified: list[dict] = []
+    if isinstance(contacts, list):
+        for c in contacts:
+            if isinstance(c, dict):
+                simplified.append({
+                    "name": c.get("name", ""),
+                    "relationship": c.get("relationship", ""),
+                    "email": c.get("email", ""),
+                    "phone": c.get("phone", ""),
+                })
+    return {
+        "name": user.get("name", ""),
+        "email": user.get("email", ""),
+        "emergency_contacts": simplified,
+        "threshold_multiplier": user.get("threshold_multiplier"),
+    }
+
+
 def _answer_dashboard_query_sync(
     user_query: str,
     system_online: bool,
@@ -314,16 +387,25 @@ def _answer_dashboard_query_sync(
     user_name: str,
     events_summary: list,
     threshold_info: dict,
+    user_profile: dict,
 ) -> str:
-    prompt = f"""You are HomePulse, a smart home safety assistant for elderly users.
-A caregiver or family member is asking you a question via ASI:One chat.
+    profile_block = (
+        user_profile
+        if user_profile
+        else "No profile details on file."
+    )
+    prompt = f"""You are HomePulse, a smart home safety assistant.
+The user may be on voice (wake word + spoken question) or text chat. Replies will often be read aloud — optimize for listening.
 
 === SYSTEM STATUS ===
 Sensor system online: {system_online}
 Last sensor heartbeat: {last_seen_ago}
-Monitoring: {user_name}
+Primary resident / monitoring context: {user_name}
 
-=== EVENTS (last 7 days, newest first) ===
+=== USER PROFILE (account) ===
+{profile_block}
+
+=== EVENTS / ALERTS (last 7 days, newest first — these are incidents the system logged) ===
 {events_summary if events_summary else "No events recorded in the last 7 days."}
 
 === BEHAVIORAL SCHEMA (per-event statistics) ===
@@ -332,17 +414,25 @@ Monitoring: {user_name}
 === USER QUESTION ===
 {user_query}
 
-Answer in plain, warm, conversational language — as if you are a caring home safety assistant.
-No markdown headers or bullet lists. Max 4 sentences. Be specific: use the event data above.
+How to answer:
+- Default to SHORT answers: one to three sentences. No long unsolicited recaps.
+- If the USER QUESTION is casual (greeting, filler, "I'm here", small talk) and does NOT ask about home, monitoring, profile, or incidents: reply in ONE short sentence offering help. Do NOT mention EVENTS, sensor activity, "this morning", or past alerts at all.
+- Give a fuller summary (up to about six sentences) only when the user clearly asks what happened, for a recap, status overview, "this morning", "tell me everything", or similar.
+- NEVER volunteer phrases like "Would you like a quick rundown?", "want me to go through", or similar unless they explicitly asked for a summary, rundown, or details.
+- Questions about "my profile", "my account", "who is on file", emergency contacts, or their email: use USER PROFILE. If a field is missing or empty, say so briefly.
+- Questions about past incidents, alerts, or "what went wrong": use EVENTS. Mention severity or time when helpful. Do not dump every event unless they ask for a full list.
+- For "how many" or "list my incidents", you may briefly enumerate the most relevant few from EVENTS.
 
-Rules on when to mention sensor status:
-- ONLY mention the sensor being offline if the user is asking about current/live status, real-time monitoring, or whether the system is working RIGHT NOW.
-- For questions about past events, weekly summaries, history, or specific incidents — do NOT mention the sensor status at all. Just answer the question from the event data.
-- If there are CRITICAL or HIGH severity events relevant to the question, highlight those."""
+Style: plain, warm, conversational. No markdown headers or bullet lists.
+
+Rules on sensor / heartbeat wording:
+- ONLY mention sensors offline or heartbeat if they ask whether monitoring is working right now, live status, or "is the system up".
+- For history-only questions, do not lead with sensor status.
+- If CRITICAL or HIGH severity events are relevant, mention them."""
 
     response = _client.messages.create(
         model=MODEL,
-        max_tokens=300,
+        max_tokens=450,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text.strip()
@@ -355,6 +445,7 @@ async def answer_dashboard_query(
     user_name: str,
     events_summary: list,
     threshold_info: dict,
+    user_profile: dict | None = None,
 ) -> str:
     return await asyncio.to_thread(
         _answer_dashboard_query_sync,
@@ -364,6 +455,7 @@ async def answer_dashboard_query(
         user_name,
         events_summary,
         threshold_info,
+        user_profile or {},
     )
 
 
@@ -433,6 +525,59 @@ def _detect_objects_sync(image_b64: str, event_type: str = "") -> list[dict]:
 async def detect_objects_in_frame(image_b64: str, event_type: str = "") -> list[dict]:
     """Use Claude vision to detect safety-relevant objects; event_type guides what to prioritize."""
     return await asyncio.to_thread(_detect_objects_sync, image_b64, event_type)
+
+
+_UNVERIFIED_SCENE_PROMPT = """You are HomePulse, a calm in-home safety voice assistant.
+
+The sensors reported: {event_type}
+We did **not** get a reliable match between that alert and a specific object in this frame (the image may be a wide shot or the cause may be off-camera).
+
+Look at what is **actually visible**. Write 2–3 short sentences for text-to-speech:
+- Only mention people, screens, speakers, pets, windows, or appliances if you can **clearly** see them.
+- Offer **plausible, everyday** explanations when helpful: TV or music, phone or laptop audio, smart speaker, another person talking, pet, fan or HVAC, traffic or neighbors outside, something in another room, etc.
+- Do **not** say a sink, stove, fridge, or other object is "in front of them" unless it is **clearly** visible.
+- Do **not** invent details not supported by the image.
+- No bullet points, no JSON, no quotation marks around the whole message."""
+
+
+def _describe_unverified_alert_scene_sync(image_b64: str, event_type: str) -> str:
+    prompt = _UNVERIFIED_SCENE_PROMPT.format(event_type=event_type or "SENSOR_EVENT")
+    response = _client.messages.create(
+        model=MODEL,
+        max_tokens=220,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": image_b64,
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+    )
+    return (response.content[0].text or "").strip()
+
+
+async def describe_unverified_alert_scene(image_b64: str, event_type: str) -> str | None:
+    """
+    When vision could not label a real object for the alert (calibration fallback),
+    produce grounded spoken guidance from the frame — not fake directional object claims.
+    """
+    if not image_b64 or not image_b64.strip():
+        return None
+    try:
+        text = await asyncio.to_thread(_describe_unverified_alert_scene_sync, image_b64, event_type)
+        return text or None
+    except Exception as e:
+        logger.warning("describe_unverified_alert_scene failed: %s", e)
+        return None
 
 
 # ── Voice correction: locate object + person in frame ────────────────────────

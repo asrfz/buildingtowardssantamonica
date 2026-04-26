@@ -12,7 +12,7 @@ No API keys or MongoDB connection needed — uses mock DB from conftest.py.
 """
 import pytest
 from datetime import datetime
-from app.services.anomaly_detector import score_reading, _classify_temp_event, _classify_sound_event
+from app.services.anomaly_detector import score_reading
 from app.utils.severity import compute_severity
 from app.models.sensor import SensorPayload
 from test_support.constants import DEMO_USER_ID
@@ -24,9 +24,11 @@ def _make_payload(data: dict) -> SensorPayload:
         "sound_level": 210,
         "temperature_c": 22.0,
         "magnetic_state": 0,
-        "accel_x": 0.01,
-        "accel_y": 0.02,
-        "accel_z": 9.80,
+        "accel_x": 0.0,
+        "accel_y": 0.0,
+        "accel_z": 1.0,
+        "gyro_magnitude": 5.0,
+        "light_level": 512,
         "pressure": 1013.0,
         "timestamp": datetime.utcnow().isoformat(),
     }
@@ -69,7 +71,7 @@ class TestStoveScenario:
     async def test_stove_event_type(self, mock_db, stove_payload):
         payload = _make_payload(stove_payload)
         result = await score_reading(DEMO_USER_ID, payload, mock_db)
-        assert result.event_type == "STOVE_LEFT_ON"
+        assert result.event_type == "TEMPERATURE_ANOMALY"
 
     async def test_stove_deviation_score(self, mock_db, stove_payload):
         """48°C − 22°C = 26°C deviation; 26 / 1.5 = 17.33x."""
@@ -93,7 +95,7 @@ class TestFaucetScenario:
     async def test_faucet_event_type(self, mock_db, faucet_payload):
         payload = _make_payload(faucet_payload)
         result = await score_reading(DEMO_USER_ID, payload, mock_db)
-        assert result.event_type == "FAUCET_RUNNING"
+        assert result.event_type == "SOUND_ANOMALY"
 
     async def test_faucet_deviation_score(self, mock_db, faucet_payload):
         """420 − 200 = 220; 220 / 50 = 4.4x."""
@@ -117,7 +119,7 @@ class TestFridgeScenario:
     async def test_fridge_event_type(self, mock_db, fridge_payload):
         payload = _make_payload(fridge_payload)
         result = await score_reading(DEMO_USER_ID, payload, mock_db)
-        assert result.event_type == "FRIDGE_OPEN"
+        assert result.event_type == "DOOR_SENSOR_ANOMALY"
 
     async def test_closed_fridge_does_not_trigger(self, mock_db):
         payload = _make_payload({"temperature_c": 22.0, "sound_level": 210, "magnetic_state": 0})
@@ -125,39 +127,31 @@ class TestFridgeScenario:
         assert result.triggered is False
 
 
-# ── Event type classification ────────────────────────────────────────────────
+# ── Arduino IMU edge flags (inputs.ino) ─────────────────────────────────────
 
-class TestEventTypeClassification:
-    def test_high_temp_low_accel_is_stove(self, stove_payload):
-        p = _make_payload(stove_payload)
-        assert _classify_temp_event(p) == "STOVE_LEFT_ON"
+class TestArduinoImuTriggers:
+    async def test_motion_only_triggers_object_dropped(self, mock_db):
+        """Previously required motion AND gyro; shaking often trips only one."""
+        payload = _make_payload({"motion_triggered": 1, "gyro_triggered": 0})
+        result = await score_reading(DEMO_USER_ID, payload, mock_db)
+        assert result.triggered is True
+        assert result.event_type == "OBJECT_DROPPED"
+        assert result.sensor == "accelerometer"
 
-    def test_moderate_temp_low_accel_is_iron(self):
-        p = _make_payload(
-            {
-                "temperature_c": 35.0,
-                "accel_x": 0.0,
-                "accel_y": 0.0,
-                "accel_z": 0.15,
-            }
-        )
-        assert _classify_temp_event(p) == "IRON_LEFT_ON"
+    async def test_gyro_only_triggers_object_dropped(self, mock_db):
+        payload = _make_payload({"motion_triggered": 0, "gyro_triggered": 1})
+        result = await score_reading(DEMO_USER_ID, payload, mock_db)
+        assert result.triggered is True
+        assert result.event_type == "OBJECT_DROPPED"
 
-    def test_high_temp_high_accel_is_fire(self, fire_payload):
-        p = _make_payload(fire_payload)
-        assert _classify_temp_event(p) == "FIRE_RISK"
-
-    def test_mid_sound_is_faucet(self):
-        p = _make_payload({"sound_level": 420, "temperature_c": 22.0})
-        assert _classify_sound_event(p) == "FAUCET_RUNNING"
-
-    def test_low_sound_is_drip(self):
-        p = _make_payload({"sound_level": 270, "temperature_c": 22.0})
-        assert _classify_sound_event(p) == "WATER_DRIPPING"
-
-    def test_very_high_sound_is_fault(self):
-        p = _make_payload({"sound_level": 800, "temperature_c": 22.0})
-        assert _classify_sound_event(p) == "APPLIANCE_FAULT"
+    async def test_imu_takes_priority_over_sound(self, mock_db):
+        """Hard IMU path runs before z-score sound."""
+        payload = _make_payload(
+            {"motion_triggered": 1, "sound_level": 900}
+        )  # 900 would be sound anomaly vs demo baseline
+        result = await score_reading(DEMO_USER_ID, payload, mock_db)
+        assert result.triggered is True
+        assert result.event_type == "OBJECT_DROPPED"
 
 
 # ── Severity thresholds ──────────────────────────────────────────────────────

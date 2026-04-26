@@ -25,9 +25,11 @@ def _payload(**kwargs) -> dict:
         "sound_level": 210,
         "temperature_c": 22.0,
         "magnetic_state": 0,
-        "accel_x": 0.01,
-        "accel_y": 0.02,
-        "accel_z": 9.80,
+        "accel_x": 0.0,
+        "accel_y": 0.0,
+        "accel_z": 1.0,
+        "gyro_magnitude": 5.0,
+        "light_level": 512,
         "pressure": 1013.0,
         "timestamp": datetime.utcnow().isoformat(),
     }
@@ -130,6 +132,7 @@ def mock_db():
     }
 
     db.users = _make_collection(find_one_result=DEMO_USER_DOC)
+    db.user_thresholds = _make_collection(find_one_result=None)
     db.sensor_baselines = _make_collection(find_one_result=baseline_doc)
     db.behavioral_schema = _make_collection(find_one_result=BEHAVIORAL_SCHEMA_DOC)
     db.events = _make_collection(find_one_result=None, find_results=[])
@@ -152,6 +155,7 @@ def mock_db_no_baseline():
     """DB where sensor_baselines returns None — tests the no-baseline path."""
     db = MagicMock()
     db.sensor_baselines = _make_collection(find_one_result=None)
+    db.user_thresholds = _make_collection(find_one_result=None)
     db.users = _make_collection(find_one_result=DEMO_USER_DOC)
     db.behavioral_schema = _make_collection(find_one_result=BEHAVIORAL_SCHEMA_DOC)
     db.events = _make_collection()

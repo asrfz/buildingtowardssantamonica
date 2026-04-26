@@ -43,6 +43,13 @@ async def escalate(ctx: Context, sender: str, msg: MonitorDecision) -> None:
         )
         return
 
+    existing = await db.events.find_one({"_id": ObjectId(msg.event_id)}, {"notification_sent": 1, "status": 1})
+    if existing and existing.get("notification_sent"):
+        ctx.logger.info(
+            f"[5/5] ESCALATE  event {msg.event_id[:8]} already emailed (e.g. sensor streak) — skip deferred Gmail"
+        )
+        return
+
     recipients: list[str] = [user["email"]]
     if msg.severity in ("HIGH", "CRITICAL"):
         for contact in user.get("emergency_contacts", []):

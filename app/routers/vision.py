@@ -1,11 +1,7 @@
 """
-vision.py — Browser webcam frame relay for the HomePulse vision pipeline.
+vision.py — Optional browser frame relay (legacy demos).
 
-Flow:
-  1. vision_agent sends {"type":"capture","data":{"event_id":"..."}} via /voice/push
-  2. Browser captures a frame from its getUserMedia stream and POSTs it here
-  3. vision_agent polls GET /vision/frame/{event_id} until the frame arrives (≤10s)
-  4. vision_agent passes the frame to Claude + Cloudinary; OpenCV is not used
+Primary vision path uses GET /sensor/live-frame-b64 (OpenCV in the API) from vision_agent / voice_agent.
 """
 
 from fastapi import APIRouter, HTTPException

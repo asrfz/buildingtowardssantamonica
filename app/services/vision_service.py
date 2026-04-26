@@ -1,11 +1,31 @@
 import asyncio
 import logging
+import sys
+import threading
+import time
 import numpy as np
 import cv2
 from bson import ObjectId
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# One capture at a time — concurrent VideoCapture on Windows (MSMF) often returns
+# "can't grab frame" (-1072873821) when preview-jpeg and live-frame-b64 overlap.
+_webcam_lock = threading.Lock()
+
+# Reuse a very recent frame so dev preview + vision_agent don't each reopen the camera
+# back-to-back (slow on Windows). Callers always get a copy; TTL keeps snapshots fresh enough.
+_frame_cache: tuple[np.ndarray, float] | None = None
+_FRAME_CACHE_TTL_SEC = 0.75
+_capture_async_lock: asyncio.Lock | None = None
+
+
+def _get_capture_lock() -> asyncio.Lock:
+    global _capture_async_lock
+    if _capture_async_lock is None:
+        _capture_async_lock = asyncio.Lock()
+    return _capture_async_lock
 
 
 # Fallback zone name for MongoDB room_zones lookup
@@ -25,18 +45,67 @@ EVENT_ZONE_MAP: dict[str, str] = {
 }
 
 
+def _open_video_capture(idx: int) -> cv2.VideoCapture:
+    """Prefer DirectShow on Windows — often more stable than MSMF for USB webcams."""
+    if sys.platform == "win32":
+        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            return cap
+        cap.release()
+    return cv2.VideoCapture(idx)
+
+
 def _capture_frame_sync() -> np.ndarray | None:
-    cap = cv2.VideoCapture(settings.WEBCAM_INDEX)
-    if not cap.isOpened():
+    idx = settings.WEBCAM_INDEX
+    with _webcam_lock:
+        logger.debug("webcam capture: opening device index=%s", idx)
+        # Brief retry helps MSMF/DSHOW when the pipeline needs a warm-up frame
+        for attempt in range(2):
+            cap = _open_video_capture(idx)
+            if not cap.isOpened():
+                logger.warning(
+                    "webcam capture: VideoCapture.open failed (index=%s) — no snapshot",
+                    idx,
+                )
+                return None
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None:
+                logger.debug(
+                    "webcam capture: ok index=%s shape=%s dtype=%s",
+                    idx,
+                    frame.shape,
+                    frame.dtype,
+                )
+                return frame
+            if attempt == 0:
+                time.sleep(0.08)
+        logger.warning(
+            "webcam capture: read() failed or empty frame (index=%s) — no snapshot",
+            idx,
+        )
         return None
-    ret, frame = cap.read()
-    cap.release()
-    return frame if ret else None
 
 
 async def capture_frame() -> np.ndarray | None:
     """Capture a single frame from the webcam. Returns None if webcam unavailable."""
-    return await asyncio.to_thread(_capture_frame_sync)
+    global _frame_cache
+    now = time.monotonic()
+    if _frame_cache is not None:
+        frame, ts = _frame_cache
+        if now - ts < _FRAME_CACHE_TTL_SEC:
+            return frame.copy()
+
+    async with _get_capture_lock():
+        now = time.monotonic()
+        if _frame_cache is not None:
+            frame, ts = _frame_cache
+            if now - ts < _FRAME_CACHE_TTL_SEC:
+                return frame.copy()
+        frame = await asyncio.to_thread(_capture_frame_sync)
+        if frame is not None:
+            _frame_cache = (frame, time.monotonic())
+        return frame
 
 
 async def detect_zone_in_frame(frame: np.ndarray, event_type: str) -> dict | None:
@@ -116,13 +185,16 @@ async def get_zone_dynamic_or_fallback(
     """
     zone = await detect_zone_in_frame(frame, event_type)
     if zone:
+        zone["visual_verified"] = True
         return zone
 
     logger.info(f"Falling back to MongoDB zone for {event_type}")
     z = await get_zone_for_event(user_id, event_type, db)
     if not z:
         return None
-    return _pixel_zone_to_fractional(z, frame)
+    out = _pixel_zone_to_fractional(z, frame)
+    out["visual_verified"] = False
+    return out
 
 
 async def detect_zone_in_frame_b64(image_b64: str, event_type: str) -> dict | None:
@@ -168,6 +240,7 @@ async def get_zone_dynamic_or_fallback_b64(
     """
     zone = await detect_zone_in_frame_b64(image_b64, event_type)
     if zone:
+        zone["visual_verified"] = True
         return zone
 
     logger.info(f"Falling back to MongoDB zone for {event_type} (b64 path)")
@@ -176,8 +249,16 @@ async def get_zone_dynamic_or_fallback_b64(
         return None
 
     if z.get("pct"):
-        z["name"] = z.get("name", "object")
+        z = {**z, "name": z.get("name", "object"), "visual_verified": False}
         return z
 
     # Pixel zones need frame dimensions to normalize; use full-frame crop as safe fallback
-    return {"name": z.get("name", "object"), "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "pct": True}
+    return {
+        "name": z.get("name", "object"),
+        "x": 0.0,
+        "y": 0.0,
+        "w": 1.0,
+        "h": 1.0,
+        "pct": True,
+        "visual_verified": False,
+    }

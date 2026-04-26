@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime
 from uagents import Agent, Context
 from uagents_core.contrib.protocols.chat import ChatMessage
@@ -13,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 # Same collection name as app.routers.sensor.SIMULATION_QUEUE_COLL
 _SIM_COLL = "sensor_simulation_queue"
+
+# Consecutive anomaly ticks (score triggered or force_triage). Reset when a tick is normal.
+_alert_streak: int = 0
+# (user_id, event_type) -> monotonic time when another full pipeline may fire
+_anomaly_cooldown_until: dict[tuple[str, str], float] = {}
 
 sensor_agent = Agent(
     name="homepulse_sensor",
@@ -46,8 +52,24 @@ async def _pop_simulation_doc(db):
     return await db[_SIM_COLL].find_one_and_delete({}, sort=[("created_at", 1)])
 
 
+def _anomaly_on_cooldown(user_id: str, event_type: str) -> float:
+    """Return seconds remaining on cooldown, or 0 if a new pipeline may run."""
+    cd = float(settings.SENSOR_ANOMALY_COOLDOWN_SECONDS or 0)
+    if cd <= 0:
+        return 0.0
+    until = _anomaly_cooldown_until.get((user_id, event_type), 0.0)
+    return max(0.0, until - time.monotonic())
+
+
+def _arm_anomaly_cooldown(user_id: str, event_type: str) -> None:
+    cd = float(settings.SENSOR_ANOMALY_COOLDOWN_SECONDS or 0)
+    if cd > 0:
+        _anomaly_cooldown_until[(user_id, event_type)] = time.monotonic() + cd
+
+
 @sensor_agent.on_interval(period=5.0)
 async def read_and_score(ctx: Context) -> None:
+    global _alert_streak
     user_id = settings.DEFAULT_USER_ID
     if not user_id:
         ctx.logger.warning("DEFAULT_USER_ID not set — run scripts/seed_demo.py first")
@@ -85,12 +107,22 @@ async def read_and_score(ctx: Context) -> None:
 
     if isinstance(force_triage, dict) and force_triage.get("event_type"):
         et = str(force_triage["event_type"])
+        remain = _anomaly_on_cooldown(user_id, et)
+        if remain > 0:
+            ctx.logger.info(
+                "FORCED SIMULATION suppressed (cooldown %.0fs left) event_type=%s",
+                remain,
+                et,
+            )
+            return
+        _alert_streak += 1
+        streak = _alert_streak
         sev = str(force_triage.get("severity", "HIGH"))
         score = float(force_triage.get("deviation_score", 5.0))
         reason = str(force_triage.get("reason", "forced_simulation"))
         _SEP = "─" * 56
         ctx.logger.info(_SEP)
-        ctx.logger.info(f"FORCED SIMULATION → triage  {et}  severity={sev}  score={score}")
+        ctx.logger.info(f"FORCED SIMULATION → triage  {et}  severity={sev}  score={score}  streak={streak}")
         ctx.logger.info(_SEP)
         await ctx.send(
             TRIAGE_AGENT_ADDRESS,
@@ -102,19 +134,38 @@ async def read_and_score(ctx: Context) -> None:
                 sensor_payload=payload.model_dump(mode="json"),
                 sensor_reason=reason,
                 timestamp_iso=datetime.utcnow().isoformat(),
+                consecutive_sensor_triggers=streak,
             ),
         )
+        _arm_anomaly_cooldown(user_id, et)
+        if streak >= settings.SENSOR_STREAK_EMAIL_THRESHOLD:
+            _alert_streak = 0
         return
 
     result = await score_reading(user_id, payload, db)
     if not result.triggered:
+        _alert_streak = 0
         return
+
+    remain = _anomaly_on_cooldown(user_id, result.event_type)
+    if remain > 0:
+        ctx.logger.info(
+            "ANOMALY suppressed (cooldown %.0fs left) %s score=%.1fx — not opening another full pipeline",
+            remain,
+            result.event_type,
+            result.deviation_score,
+        )
+        return
+
+    _alert_streak += 1
+    streak = _alert_streak
 
     _SEP = "─" * 56
     ctx.logger.info(_SEP)
     ctx.logger.info(
         f"ANOMALY DETECTED  {result.event_type}"
         f"  score={result.deviation_score:.1f}x  severity={result.severity}  sensor={result.sensor}"
+        f"  streak={streak}"
     )
     ctx.logger.info(_SEP)
 
@@ -128,8 +179,12 @@ async def read_and_score(ctx: Context) -> None:
             sensor_payload=payload.model_dump(mode="json"),
             sensor_reason=result.reason,
             timestamp_iso=datetime.utcnow().isoformat(),
+            consecutive_sensor_triggers=streak,
         ),
     )
+    _arm_anomaly_cooldown(user_id, result.event_type)
+    if streak >= settings.SENSOR_STREAK_EMAIL_THRESHOLD:
+        _alert_streak = 0
 
 
 if __name__ == "__main__":

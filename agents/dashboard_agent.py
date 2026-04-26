@@ -4,7 +4,8 @@ dashboard_agent — HomePulse conversational gateway for ASI:One.
 Run alongside FastAPI in a separate terminal:
     python agents/dashboard_agent.py
 
-Connects to Agentverse via mailbox — no ngrok needed for ASI:One chat.
+With HOMEPULSE_DASHBOARD_MAILBOX=true: connects to Agentverse via mailbox (ASI:One).
+With mailbox false (default): same HTTP bureau as run_agents.py for local voice queries.
 """
 import sys
 import os
@@ -27,27 +28,32 @@ from uagents_core.contrib.protocols.chat import (
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service
+from app.services.claude_service import compact_user_profile_for_prompt
 from agents.agent_messages import VoiceQuery, VoiceQueryResponse, VOICE_INPUT_AGENT_ADDRESS
 
 logger = logging.getLogger(__name__)
 
+# Mailbox ON: run `python agents/dashboard_agent.py` with HOMEPULSE_DASHBOARD_MAILBOX=true for ASI:One.
+# Mailbox OFF: bundled in run_agents.py — uses bureau HTTP so voice_input → VoiceQuery resolves locally.
+_dashboard_mailbox = settings.HOMEPULSE_DASHBOARD_MAILBOX
 dashboard_agent = Agent(
     name="homepulse",
     seed=settings.FETCHAI_AGENT_SEED + "_dashboard",
-    port=8001,
-    mailbox=True,
-    agentverse={
-        "api_key": settings.AGENTVERSE_KEY,
-        "url": "https://agentverse.ai",
-    },
+    port=8001 if _dashboard_mailbox else None,
+    mailbox=_dashboard_mailbox,
+    agentverse=(
+        {"api_key": settings.AGENTVERSE_KEY, "url": "https://agentverse.ai"}
+        if _dashboard_mailbox
+        else None
+    ),
 )
 
 chat_proto = Protocol(spec=chat_protocol_spec)
 
 _WELCOME = (
-    "HomePulse home safety AI online. "
-    "Ask me what happened at home, about recent alerts, "
-    "or Margaret's current home status."
+    "HomePulse is online. Ask a short question when you're ready — for example "
+    "what happened recently, your profile, or past incidents. "
+    "I'll keep answers brief unless you ask for a full summary."
 )
 
 
@@ -206,6 +212,8 @@ async def _build_response(query: str) -> str:
         except Exception:
             pass
 
+    profile = compact_user_profile_for_prompt(user)
+
     return await claude_service.answer_dashboard_query(
         user_query=query,
         system_online=system_online,
@@ -213,6 +221,7 @@ async def _build_response(query: str) -> str:
         user_name=user_name,
         events_summary=events_summary,
         threshold_info=threshold_info,
+        user_profile=profile,
     )
 
 

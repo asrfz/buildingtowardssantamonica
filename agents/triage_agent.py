@@ -7,6 +7,7 @@ from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service
+from app.services.snapshot_cloudinary_gate import grant_upload_slot
 from app.services.tts_service import speak_async
 from app.schemas.event_schema import build_event_doc
 from agents.agent_messages import (
@@ -14,6 +15,8 @@ from agents.agent_messages import (
     TriageResult,
     HISTORY_AGENT_ADDRESS,
     VISION_AGENT_ADDRESS,
+    NOTIFICATION_AGENT_ADDRESS,
+    EscalationOrder,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,44 +28,47 @@ def _voice_push_url() -> str:
 
 def _sensor_alert_text(event_type: str, payload: dict, sensor_reason: str) -> str:
     """Build an immediate, plain-language TTS announcement from raw sensor data."""
-    temp  = payload.get("temperature_c", 0)
+    temp = payload.get("temperature_c")
     sound = payload.get("sound_level", 0)
 
+    _tail = "Running a quick safety check."
+
     if event_type == "TEMPERATURE_ANOMALY":
-        if temp > 30:
-            return f"Higher than normal temperature detected — currently {temp:.0f} degrees. Activating camera."
-        elif temp < 15:
-            return f"Lower than normal temperature detected — currently {temp:.0f} degrees. Activating camera."
-        else:
-            return f"Unusual temperature reading — {temp:.0f} degrees. Activating camera."
+        if isinstance(temp, (int, float)):
+            if temp > 30:
+                return f"Higher than normal temperature detected — currently {temp:.0f} degrees. {_tail}"
+            if temp < 15:
+                return f"Lower than normal temperature detected — currently {temp:.0f} degrees. {_tail}"
+            return f"Unusual temperature reading — {temp:.0f} degrees. {_tail}"
+        return f"Unusual temperature pattern reported by sensors. {_tail}"
 
     if event_type == "SOUND_ANOMALY":
         if sound > 600:
-            return f"Loud noise detected — sound level {sound:.0f}. Activating camera."
+            return f"Loud noise detected — sound level {sound:.0f}. {_tail}"
         elif sound < 200:
-            return f"Unusual low-level noise detected. Activating camera."
+            return f"Unusual low-level noise detected. {_tail}"
         else:
-            return f"Unusual noise detected. Activating camera."
+            return f"Unusual noise detected. {_tail}"
 
     if event_type == "DOOR_SENSOR_ANOMALY":
-        return "Door or enclosure opened unexpectedly. Activating camera."
+        return f"Door or enclosure sensor changed unexpectedly. {_tail}"
 
     if event_type == "OBJECT_DROPPED":
-        return "Drop or impact detected. Activating camera."
+        return f"Drop or impact detected. {_tail}"
 
     if event_type == "LIGHT_STATE_CHANGED":
-        return "Unexpected light change detected. Activating camera."
+        return f"Unexpected light change detected. {_tail}"
 
     if event_type == "FALL_DETECTED":
-        return "Possible fall detected. Activating camera immediately."
+        return "Possible fall detected. Please assess if you can do so safely."
 
     if event_type == "FIRE_RISK":
-        return "Fire risk detected by sensors. Activating camera."
+        return f"Fire risk flagged by sensors. {_tail}"
 
     if event_type == "MULTIVARIATE_ANOMALY":
-        return "Multiple sensor irregularities detected simultaneously. Activating camera."
+        return f"Multiple sensor irregularities at once. {_tail}"
 
-    return f"Sensor irregularity detected. Activating camera."
+    return f"Sensor irregularity detected. {_tail}"
 
 
 async def _push_status(text: str) -> None:
@@ -71,6 +77,34 @@ async def _push_status(text: str) -> None:
             await client.post(_voice_push_url(), json={"type": "transcript", "text": text})
     except Exception:
         pass
+
+
+_STREAK_VOICE = (
+    "Three repeated sensor alerts were detected with no acknowledged response from the home. "
+    "I'm sending an email to your emergency contact now."
+)
+
+
+async def _sensor_streak_email_recipients(user_id: str, severity: str) -> list[str]:
+    """Primary user + emergency contacts when auto-escalating after consecutive sensor trips."""
+    user = await get_db().users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return []
+    emails: list[str] = []
+    if user.get("email"):
+        emails.append(user["email"])
+    if severity in ("MEDIUM", "HIGH", "CRITICAL"):
+        for contact in user.get("emergency_contacts") or []:
+            em = (contact or {}).get("email")
+            if em:
+                emails.append(em)
+    seen: set[str] = set()
+    out: list[str] = []
+    for e in emails:
+        if e and e not in seen:
+            seen.add(e)
+            out.append(e)
+    return out
 
 
 triage_agent = Agent(
@@ -161,6 +195,49 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
     except Exception as e:
         ctx.logger.debug(f"Early TTS/push failed (non-blocking): {e}")
 
+    thr = settings.SENSOR_STREAK_EMAIL_THRESHOLD
+    if msg.consecutive_sensor_triggers >= thr:
+        ctx.logger.info(
+            f"[1/5] TRIAGE  sensor streak {msg.consecutive_sensor_triggers} ≥ {thr} — auto emergency email"
+        )
+        try:
+            await speak_async(_STREAK_VOICE, correction=False)
+            await _push_status(_STREAK_VOICE)
+        except Exception as e:
+            ctx.logger.debug(f"Streak TTS/push failed (non-blocking): {e}")
+
+        recipients = await _sensor_streak_email_recipients(msg.user_id, msg.severity)
+        if not recipients:
+            ctx.logger.warning("[1/5] TRIAGE  streak escalation: no email recipients on user doc")
+            try:
+                await speak_async(
+                    "I need to reach your emergency contact, but no email is configured. Please add one in settings.",
+                    correction=False,
+                )
+            except Exception:
+                pass
+        elif NOTIFICATION_AGENT_ADDRESS:
+            cancel_window = 0 if msg.severity == "CRITICAL" else settings.CANCEL_WINDOW_SECONDS
+            await ctx.send(
+                NOTIFICATION_AGENT_ADDRESS,
+                EscalationOrder(
+                    event_id=event_id,
+                    user_id=msg.user_id,
+                    recipients=recipients,
+                    severity=msg.severity,
+                    recommended_action=(
+                        f"HomePulse automated escalation: {msg.consecutive_sensor_triggers} consecutive "
+                        "sensor anomalies with no user acknowledgment. Please check on the resident."
+                    ),
+                    cancel_window_seconds=cancel_window,
+                    event_type=msg.event_type,
+                    sensor_payload=msg.sensor_payload,
+                    image_url="",
+                ),
+            )
+        else:
+            ctx.logger.warning("NOTIFICATION_AGENT_ADDRESS not set — streak email skipped")
+
     # Fire history_agent and vision_agent in parallel — both forward to monitor_agent
     if not HISTORY_AGENT_ADDRESS or not VISION_AGENT_ADDRESS:
         ctx.logger.warning("HISTORY/VISION agent addresses not set — run scripts/register_agents.py")
@@ -178,6 +255,8 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
         investigate=True,
         timestamp_iso=datetime.utcnow().isoformat(),
     )
+
+    await grant_upload_slot(db, msg.user_id)
 
     await ctx.send(HISTORY_AGENT_ADDRESS, triage_result)
     await ctx.send(VISION_AGENT_ADDRESS, triage_result)

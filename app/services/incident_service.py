@@ -21,7 +21,8 @@ import math
 from datetime import datetime
 from bson import ObjectId
 from pymongo.errors import OperationFailure
-from app.services.vector_service import EMBEDDING_FIELDS, _FALLBACK
+from app.services.vector_service import EMBEDDING_FIELDS
+from app.services.baseline_stats import stat as baseline_stat
 from app.utils.event_labels import label_for_event_type
 
 logger = logging.getLogger(__name__)
@@ -36,21 +37,23 @@ _RISK_SCORES = {
 
 
 def _sensor_to_embedding(sensor_payload: dict) -> list[float]:
-    """Build a 7-dim unit vector from a sensor_payload dict (no baseline — uses fallbacks)."""
+    """Build a 7-dim unit vector from a sensor_payload dict (no baseline — uses default stats)."""
+    tc = sensor_payload.get("temperature_c")
+    pr = sensor_payload.get("pressure")
     raw = {
-        "temperature_c":  float(sensor_payload.get("temperature_c", 22.0)),
+        "temperature_c": float(tc) if tc is not None else baseline_stat(None, "temperature")["mean"],
         "sound_level":    float(sensor_payload.get("sound_level", 200)),
         "magnetic_state": float(sensor_payload.get("magnetic_state", 0)),
         "accel_x":        float(sensor_payload.get("accel_x", 0.0)),
         "accel_y":        float(sensor_payload.get("accel_y", 0.0)),
-        "accel_z":        float(sensor_payload.get("accel_z", 9.81)),
-        "pressure":       float(sensor_payload.get("pressure", 1013.0)),
+        "accel_z":        float(sensor_payload.get("accel_z", 1.0)),
+        "pressure":       float(pr) if pr is not None else baseline_stat(None, "pressure")["mean"],
     }
     vec = []
     for payload_field, baseline_key in EMBEDDING_FIELDS:
-        stats = _FALLBACK[baseline_key]
+        stats = baseline_stat(None, baseline_key)
         mean = float(stats["mean"])
-        std  = float(stats["std_dev"]) or 1.0
+        std = float(stats["std_dev"]) or 1.0
         vec.append((raw[payload_field] - mean) / std)
     magnitude = math.sqrt(sum(v * v for v in vec)) or 1.0
     return [round(v / magnitude, 6) for v in vec]
@@ -76,11 +79,12 @@ async def create_incident_report(
     embedding = _sensor_to_embedding(sensor_payload)
     now = datetime.utcnow()
 
-    temp = sensor_payload.get("temperature_c", "?")
+    temp = sensor_payload.get("temperature_c")
+    temp_s = f"{temp}°C" if temp is not None else "n/a"
     sound = sensor_payload.get("sound_level", "?")
     summary = (
         f"{label} detected with {severity.lower()} severity. "
-        f"Sensor readings at time of incident: temperature {temp}°C, "
+        f"Sensor readings at time of incident: temperature {temp_s}, "
         f"sound level {sound}. {recommended_action}"
     )
 

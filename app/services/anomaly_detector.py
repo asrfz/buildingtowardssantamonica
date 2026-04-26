@@ -1,7 +1,8 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from bson import ObjectId
 from app.models.sensor import SensorPayload
 from app.utils.severity import compute_severity
+from app.services.baseline_stats import accel_magnitude_of, stat
 from app.services.vector_service import (
     payload_to_embedding,
     store_sensor_vector,
@@ -21,16 +22,41 @@ class AnomalyResult:
     reason: str = ""
 
 
+def _z_exceeds(
+    value: float,
+    mean: float,
+    std: float,
+    multiplier: float,
+) -> tuple[bool, float]:
+    if std <= 0:
+        return False, 0.0
+    dev = abs(value - mean)
+    if dev <= multiplier * std:
+        return False, 0.0
+    return True, round(dev / std, 2)
+
+
 async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResult:
-    # Hard threshold path from Arduino triggers (real-time edge events).
-    if payload.drop_detected or (payload.motion_triggered and payload.gyro_triggered):
+    """
+    Score a sensor reading against hourly baselines + firmware edge flags.
+
+    Priority (first match wins):
+      1) IMU edge flags → OBJECT_DROPPED
+      2) Light step change (Arduino) → LIGHT_STATE_CHANGED
+      3) Firmware sound / magnetic edge flags → SOUND_ANOMALY / DOOR_SENSOR_ANOMALY
+      4) Per-channel z-scores: temperature, sound, ambient light level, pressure,
+         acceleration magnitude, gyro magnitude, magnetic reed state
+      5) Multivariate vector similarity
+    """
+    # ── Firmware instant triggers (no baseline required) ───────────────────
+    if payload.drop_detected or payload.motion_triggered or payload.gyro_triggered:
         return AnomalyResult(
             triggered=True,
             event_type="OBJECT_DROPPED",
-            deviation_score=4.5,
+            deviation_score=4.5 if (payload.motion_triggered and payload.gyro_triggered) else 3.8,
             severity="MEDIUM",
             sensor="accelerometer",
-            reason="arduino_threshold_drop",
+            reason="arduino_imu_threshold",
         )
 
     if payload.light_change_detected:
@@ -40,7 +66,27 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
             deviation_score=3.0,
             severity="LOW",
             sensor="light",
-            reason="arduino_threshold_light_delta",
+            reason="arduino_light_step_delta",
+        )
+
+    if payload.sound_triggered:
+        return AnomalyResult(
+            triggered=True,
+            event_type="SOUND_ANOMALY",
+            deviation_score=3.6,
+            severity="MEDIUM",
+            sensor="sound",
+            reason="arduino_sound_threshold",
+        )
+
+    if payload.magnetic_triggered:
+        return AnomalyResult(
+            triggered=True,
+            event_type="DOOR_SENSOR_ANOMALY",
+            deviation_score=3.7,
+            severity="MEDIUM",
+            sensor="magnetic",
+            reason="arduino_magnetic_field_threshold",
         )
 
     hour = payload.timestamp.hour
@@ -55,32 +101,33 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
         return AnomalyResult(triggered=False, reason="no_baseline")
 
     thresholds = await get_user_thresholds(user_id, db)
-
-    # Compute embedding once — reused for storage regardless of trigger path
     embedding = payload_to_embedding(payload, baseline)
 
-    # ── Z-score checks (single-field, fast) ──────────────────────────────────
+    # ── Z-score channels (each uses baseline_stats defaults if key missing) ─
 
-    temp_mean = baseline["temperature"]["mean"]
-    temp_std  = baseline["temperature"]["std_dev"]
-    temp_dev  = abs(payload.temperature_c - temp_mean)
-    if temp_dev > get_multiplier(thresholds, "temperature_c") * temp_std:
-        score = round(temp_dev / temp_std, 2)
-        await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
-        return AnomalyResult(
-            triggered=True,
-            event_type="TEMPERATURE_ANOMALY",
-            deviation_score=score,
-            severity=compute_severity(score),
-            sensor="temperature",
-            reason=f"temp={payload.temperature_c}°C vs baseline mean={temp_mean:.1f}",
+    if payload.temperature_c is not None:
+        t = stat(baseline, "temperature")
+        ok, score = _z_exceeds(
+            payload.temperature_c, t["mean"], t["std_dev"],
+            get_multiplier(thresholds, "temperature_c"),
         )
+        if ok:
+            await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
+            return AnomalyResult(
+                triggered=True,
+                event_type="TEMPERATURE_ANOMALY",
+                deviation_score=score,
+                severity=compute_severity(score),
+                sensor="temperature",
+                reason=f"temp={payload.temperature_c}°C vs baseline mean={t['mean']:.1f}",
+            )
 
-    sound_mean = baseline["sound_level"]["mean"]
-    sound_std  = baseline["sound_level"]["std_dev"]
-    sound_dev  = abs(payload.sound_level - sound_mean)
-    if sound_dev > get_multiplier(thresholds, "sound_level") * sound_std:
-        score = round(sound_dev / sound_std, 2)
+    s = stat(baseline, "sound_level")
+    ok, score = _z_exceeds(
+        float(payload.sound_level), s["mean"], s["std_dev"],
+        get_multiplier(thresholds, "sound_level"),
+    )
+    if ok:
         await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
             triggered=True,
@@ -88,10 +135,77 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
             deviation_score=score,
             severity=compute_severity(score),
             sensor="sound",
-            reason=f"sound={payload.sound_level} vs baseline mean={sound_mean:.1f}",
+            reason=f"sound={payload.sound_level} vs baseline mean={s['mean']:.1f}",
         )
 
-    mag_mean = baseline["magnetic_state"]["mean"]
+    if payload.light_level is not None:
+        ll = stat(baseline, "light_level")
+        ok, score = _z_exceeds(
+            float(payload.light_level), ll["mean"], ll["std_dev"],
+            get_multiplier(thresholds, "light_level"),
+        )
+        if ok:
+            await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
+            return AnomalyResult(
+                triggered=True,
+                event_type="LIGHT_STATE_CHANGED",
+                deviation_score=score,
+                severity=compute_severity(score),
+                sensor="light",
+                reason=f"light_level={payload.light_level} vs baseline mean={ll['mean']:.0f}",
+            )
+
+    if payload.pressure is not None:
+        p = stat(baseline, "pressure")
+        ok, score = _z_exceeds(
+            payload.pressure, p["mean"], p["std_dev"],
+            get_multiplier(thresholds, "pressure"),
+        )
+        if ok:
+            await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
+            return AnomalyResult(
+                triggered=True,
+                event_type="MULTIVARIATE_ANOMALY",
+                deviation_score=score,
+                severity=compute_severity(score),
+                sensor="pressure",
+                reason=f"pressure={payload.pressure} vs baseline mean={p['mean']:.1f}",
+            )
+
+    am = stat(baseline, "accel_magnitude")
+    accel_mag = accel_magnitude_of(payload)
+    ok, score = _z_exceeds(
+        accel_mag, am["mean"], am["std_dev"],
+        get_multiplier(thresholds, "accel_magnitude"),
+    )
+    if ok:
+        await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
+        return AnomalyResult(
+            triggered=True,
+            event_type="OBJECT_DROPPED",
+            deviation_score=score,
+            severity=compute_severity(score),
+            sensor="accelerometer",
+            reason=f"accel_mag={accel_mag:.3f}g vs baseline mean={am['mean']:.3f}",
+        )
+
+    gm = stat(baseline, "gyro_magnitude")
+    ok, score = _z_exceeds(
+        payload.gyro_magnitude, gm["mean"], gm["std_dev"],
+        get_multiplier(thresholds, "gyro_magnitude"),
+    )
+    if ok:
+        await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
+        return AnomalyResult(
+            triggered=True,
+            event_type="OBJECT_DROPPED",
+            deviation_score=score,
+            severity=compute_severity(score),
+            sensor="gyroscope",
+            reason=f"gyro_mag={payload.gyro_magnitude:.1f} vs baseline mean={gm['mean']:.1f}",
+        )
+
+    mag_mean = stat(baseline, "magnetic_state")["mean"]
     if payload.magnetic_state != round(mag_mean) and payload.magnetic_state == 1:
         await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
@@ -100,15 +214,12 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
             deviation_score=4.0,
             severity="MEDIUM",
             sensor="magnetic",
-            reason="magnetic state changed — door or enclosure opened",
+            reason="magnetic_state changed — door or enclosure opened",
         )
 
-    # ── Vector catch-all (multi-variate anomaly) ─────────────────────────────
-    # Runs only when no single field tripped — catches combinations like
-    # mildly-elevated temp + unusual accelerometer together.
     similarity = await vector_anomaly_score(user_id, embedding, db)
     if similarity < ANOMALY_SIMILARITY_THRESHOLD:
-        deviation = round((1.0 - similarity) * 20, 2)   # scale to deviation units
+        deviation = round((1.0 - similarity) * 20, 2)
         await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
             triggered=True,
@@ -121,5 +232,3 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
 
     await store_sensor_vector(user_id, payload, embedding, is_anomaly=False, db=db)
     return AnomalyResult(triggered=False)
-
-
