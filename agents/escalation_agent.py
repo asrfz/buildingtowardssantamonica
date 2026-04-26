@@ -36,7 +36,7 @@ async def escalate(ctx: Context, sender: str, msg: MonitorDecision) -> None:
 
     # Severity ladder: LOW is logged only, others notify
     if msg.severity == "LOW":
-        ctx.logger.info(f"Event {msg.event_id} is LOW severity — logged, no notification sent")
+        ctx.logger.info(f"[5/5] ESCALATE  LOW severity — logged only, no notification")
         await db.events.update_one(
             {"_id": ObjectId(msg.event_id)},
             {"$set": {"status": "logged_low"}},
@@ -68,9 +68,11 @@ async def escalate(ctx: Context, sender: str, msg: MonitorDecision) -> None:
         return
 
     ctx.logger.info(
-        f"Event {msg.event_id} ({msg.severity}) — in-home alert only; email deferred. "
-        f"Prepared {len(recipients)} recipient(s), cancel_window={cancel_window}s. "
-        f"User can say e.g. 'send a message to get help' after the wake phrase."
+        f"[5/5] ESCALATE  {msg.severity} — in-home TTS/UI alert sent"
+        f"  email deferred to {len(recipients)} recipient(s)"
+    )
+    ctx.logger.info(
+        f"[5/5] ESCALATE  say 'Hey HomePulse, send help' to trigger email notification"
     )
 
 

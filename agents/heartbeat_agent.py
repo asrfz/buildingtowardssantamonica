@@ -5,7 +5,6 @@ from uagents import Agent, Context
 from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
-from app.services import gmail_service
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +44,8 @@ async def check_heartbeat(ctx: Context) -> None:
     if silence_seconds > settings.HEARTBEAT_TIMEOUT_SECONDS:
         if not _offline_alert_sent:
             ctx.logger.warning(
-                f"sensor_agent silent for {silence_seconds:.0f}s — firing offline alert"
+                f"sensor_agent silent for {silence_seconds:.0f}s — check hardware"
             )
-            user_id = settings.DEFAULT_USER_ID
-            if user_id:
-                user = await db.users.find_one({"_id": ObjectId(user_id)})
-                if user:
-                    await gmail_service.send_system_offline_alert(user)
             _offline_alert_sent = True
     else:
         if _offline_alert_sent:

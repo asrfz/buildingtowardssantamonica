@@ -51,7 +51,8 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
         )
 
     ctx.logger.info(
-        f"Triaging {msg.event_type} (score={msg.deviation_score:.1f}x, fp_rate={fp_rate:.0%})"
+        f"[1/5] TRIAGE  {msg.event_type}"
+        f"  score={msg.deviation_score:.1f}x  fp_rate={fp_rate:.0%}"
     )
 
     try:
@@ -71,9 +72,9 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
     confidence: float = result.get("confidence", 0.0)
     reason: str = result.get("reason", "")
 
+    outcome = "CONFIRMED" if investigate else "DISMISSED"
     ctx.logger.info(
-        f"Triage result — investigate={investigate}, "
-        f"confidence={confidence:.2f}, reason={reason!r}"
+        f"[1/5] TRIAGE  {outcome}  confidence={confidence:.0%}  reason={reason!r}"
     )
 
     # Write event to MongoDB regardless of outcome
@@ -92,7 +93,7 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
     event_id = str(inserted.inserted_id)
 
     if not investigate:
-        ctx.logger.info(f"Event {event_id} dismissed by Claude: {reason}")
+        ctx.logger.info(f"[1/5] TRIAGE  event {event_id[:8]} dismissed — pipeline stopped")
         return
 
     # Fire history_agent and vision_agent in parallel — both forward to monitor_agent
@@ -117,7 +118,7 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
     await ctx.send(VISION_AGENT_ADDRESS, triage_result)
 
     ctx.logger.info(
-        f"Event {event_id} confirmed — fired history_agent + vision_agent in parallel"
+        f"[2/5] PIPELINE  event {event_id[:8]} → history_agent + vision_agent in parallel"
     )
 
 

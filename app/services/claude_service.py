@@ -337,34 +337,47 @@ async def answer_dashboard_query(
 # ── Vision: dynamic object detection ────────────────────────────────────────
 
 # Objects Claude will look for in frame
-_DETECTABLE_OBJECTS = ["stove", "sink", "fridge", "oven", "microwave", "iron", "kettle", "toaster"]
-
-_DETECT_PROMPT = """You are a household object detector for a home safety system.
-Analyze this image and identify the bounding boxes of all visible household appliances.
-
-Look for: stove, sink, fridge, oven, microwave, iron, kettle, toaster, water faucet.
-
-For each object found, return its bounding box as a FRACTION of the image (0.0 to 1.0):
-- x: left edge (fraction of image width)
-- y: top edge (fraction of image height)
-- w: width (fraction of image width)
-- h: height (fraction of image height)
-
-Respond with JSON only, no explanation:
-{
-  "objects": [
-    {"name": "stove", "x": 0.1, "y": 0.4, "w": 0.3, "h": 0.25},
-    {"name": "sink", "x": 0.6, "y": 0.3, "w": 0.2, "h": 0.2}
-  ]
+_SENSOR_HINTS: dict[str, str] = {
+    "TEMPERATURE_ANOMALY":  "The temperature sensor fired — prioritize heat sources: stove burners, irons, ovens, candles, fire, smoke.",
+    "SOUND_ANOMALY":        "The sound sensor fired — prioritize: running water, dripping taps, falling objects, breaking glass, alarms.",
+    "DOOR_SENSOR_ANOMALY":  "A magnetic door sensor fired — prioritize open doors, fridge doors, cabinet doors, windows.",
+    "OBJECT_DROPPED":       "A drop/impact was detected — prioritize fallen objects, spilled liquids, a person who may have fallen.",
+    "MULTIVARIATE_ANOMALY": "Multiple sensors fired simultaneously — identify the most visually prominent safety concern.",
+    "FALL_DETECTED":        "A fall was detected — prioritize people on the floor or in unusual positions.",
+    "FIRE_RISK":            "Fire risk detected — prioritize flames, smoke, or glowing burners.",
 }
 
-If no relevant objects are visible, return: {"objects": []}"""
+_DETECT_PROMPT_TEMPLATE = """You are the visual inspection system for a home safety AI.
+
+A sensor event was triggered. Context: {sensor_hint}
+
+Examine this image and locate any object or situation that could explain the alert.
+Do not limit yourself to a fixed list — identify whatever is actually visible and relevant.
+Examples of what you might find: a stove burner left on, a water bottle knocked over, a running faucet,
+an open fridge door, a fallen person, a burning candle, a leaking pipe, a dropped phone, fire, smoke, etc.
+
+For each relevant object or situation, return its bounding box as a FRACTION of the image (0.0 to 1.0):
+- x: left edge, y: top edge, w: width, h: height
+
+Order results by safety relevance (most important first).
+
+Respond with JSON only, no explanation:
+{{
+  "objects": [
+    {{"name": "stove burner on", "x": 0.1, "y": 0.4, "w": 0.3, "h": 0.25}},
+    {{"name": "water bottle on floor", "x": 0.6, "y": 0.7, "w": 0.1, "h": 0.15}}
+  ]
+}}
+
+If nothing relevant is visible, return: {{"objects": []}}"""
 
 
-def _detect_objects_sync(image_b64: str) -> list[dict]:
+def _detect_objects_sync(image_b64: str, event_type: str = "") -> list[dict]:
+    hint = _SENSOR_HINTS.get(event_type, "A sensor anomaly was detected — identify any safety-relevant object or situation.")
+    prompt = _DETECT_PROMPT_TEMPLATE.format(sensor_hint=hint)
     response = _client.messages.create(
         model=MODEL,
-        max_tokens=400,
+        max_tokens=500,
         messages=[{
             "role": "user",
             "content": [
@@ -376,7 +389,7 @@ def _detect_objects_sync(image_b64: str) -> list[dict]:
                         "data": image_b64,
                     },
                 },
-                {"type": "text", "text": _DETECT_PROMPT},
+                {"type": "text", "text": prompt},
             ],
         }],
     )
@@ -384,9 +397,9 @@ def _detect_objects_sync(image_b64: str) -> list[dict]:
     return result.get("objects", [])
 
 
-async def detect_objects_in_frame(image_b64: str) -> list[dict]:
-    """Use Claude vision to detect household objects and return bounding boxes as fractions (0-1)."""
-    return await asyncio.to_thread(_detect_objects_sync, image_b64)
+async def detect_objects_in_frame(image_b64: str, event_type: str = "") -> list[dict]:
+    """Use Claude vision to detect safety-relevant objects; event_type guides what to prioritize."""
+    return await asyncio.to_thread(_detect_objects_sync, image_b64, event_type)
 
 
 # ── Voice correction: locate object + person in frame ────────────────────────

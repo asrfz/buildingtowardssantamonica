@@ -64,7 +64,7 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
     hour = now.hour
     day_type = "weekend" if now.weekday() >= 5 else "weekday"
 
-    ctx.logger.info(f"Both results received for event {event_id} — calling Claude")
+    ctx.logger.info(f"[4/5] MONITOR  both results in for event {event_id[:8]} — calling Claude reasoning")
 
     try:
         decision = await claude_service.reason_about_event(
@@ -86,7 +86,7 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
     suggested_service = decision.get("suggested_service", "none")
 
     ctx.logger.info(
-        f"Monitor decision: {confirmed_type} ({severity}) — {recommended_action}"
+        f"[4/5] MONITOR  {confirmed_type} ({severity}) — {recommended_action[:80]}"
     )
 
     # Update event in MongoDB with full reasoning

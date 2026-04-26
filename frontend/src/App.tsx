@@ -33,13 +33,51 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [wsLines, setWsLines] = useState<string[]>([])
   const [alerts, setAlerts] = useState<LiveAlert[]>([])
+  const [cameraError, setCameraError] = useState('')
+  const [cameraReady, setCameraReady] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const cameraReadyRef = useRef(false)
 
   useEffect(() => {
     localStorage.setItem(USER_STORAGE, userId)
   }, [userId])
 
-  // Auto-connect WebSocket for live alert feed
+  // Request camera on mount
+  useEffect(() => {
+    navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      .then((stream) => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          cameraReadyRef.current = true
+          setCameraReady(true)
+        }
+      })
+      .catch(() => setCameraError('Camera permission denied — frame capture disabled'))
+  }, [])
+
+  // Capture a frame from the live video and POST it to /vision/frame
+  const captureAndPostFrame = useCallback(async (eventId: string) => {
+    const video = videoRef.current
+    if (!cameraReadyRef.current || !video || video.videoWidth === 0) return
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d')?.drawImage(video, 0, 0)
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
+    const image_b64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '')
+    try {
+      await fetch(`${apiBase()}/vision/frame`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_id: eventId, image_b64 }),
+      })
+    } catch (e) {
+      console.error('[HomePulse] Frame POST failed:', e)
+    }
+  }, [])
+
+  // Auto-connect WebSocket for live alert feed + capture trigger
   useEffect(() => {
     const base = apiBase().replace(/^http/, 'ws')
     const url = `${base}/voice/ws`
@@ -52,7 +90,9 @@ export default function App() {
         setWsLines((prev) => [...prev.slice(-40), ev.data])
         try {
           const msg = JSON.parse(ev.data)
-          if (msg.type === 'alert' && msg.data) {
+          if (msg.type === 'capture' && msg.data?.event_id) {
+            captureAndPostFrame(msg.data.event_id)
+          } else if (msg.type === 'alert' && msg.data) {
             setAlerts((prev) => [
               {
                 id: `${Date.now()}`,
@@ -73,7 +113,7 @@ export default function App() {
 
     connect()
     return () => { wsRef.current?.close() }
-  }, [])
+  }, [captureAndPostFrame])
 
   const pushLog = useCallback((line: string) => {
     setLog((prev) => [...prev.slice(-80), `[${new Date().toLocaleTimeString()}] ${line}`])
@@ -207,6 +247,26 @@ export default function App() {
               </div>
             </section>
           )}
+
+          <section className="card">
+            <h2>
+              Camera Feed
+              {cameraReady && (
+                <span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#22c55e', marginLeft: 8 }}>● live</span>
+              )}
+            </h2>
+            {cameraError
+              ? <p className="warn">{cameraError}</p>
+              : <p className="hint">Active — frame sent to vision agent automatically when an irregularity is detected.</p>
+            }
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{ width: '100%', borderRadius: 8, background: '#0f172a', display: 'block', marginTop: 8 }}
+            />
+          </section>
 
           <section className="card">
             <h2>Connection</h2>

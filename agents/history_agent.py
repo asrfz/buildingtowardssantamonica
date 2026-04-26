@@ -57,8 +57,8 @@ async def pull_history(ctx: Context, sender: str, msg: TriageResult) -> None:
         behavioral_schema = schema_doc.get("event_type_history", {})
 
     ctx.logger.info(
-        f"History pulled for event {msg.event_id}: "
-        f"{len(serialized_events)} prior {msg.event_type} events"
+        f"[3a/5] HISTORY  event {msg.event_id[:8]}"
+        f"  {len(serialized_events)} prior {msg.event_type} events found"
     )
 
     if not MONITOR_AGENT_ADDRESS:

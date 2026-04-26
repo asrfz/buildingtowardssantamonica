@@ -69,10 +69,11 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
         await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
             triggered=True,
-            event_type=_classify_temp_event(payload),
+            event_type="TEMPERATURE_ANOMALY",
             deviation_score=score,
             severity=compute_severity(score),
             sensor="temperature",
+            reason=f"temp={payload.temperature_c}°C vs baseline mean={temp_mean:.1f}",
         )
 
     sound_mean = baseline["sound_level"]["mean"]
@@ -83,10 +84,11 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
         await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
             triggered=True,
-            event_type=_classify_sound_event(payload),
+            event_type="SOUND_ANOMALY",
             deviation_score=score,
             severity=compute_severity(score),
             sensor="sound",
+            reason=f"sound={payload.sound_level} vs baseline mean={sound_mean:.1f}",
         )
 
     mag_mean = baseline["magnetic_state"]["mean"]
@@ -94,10 +96,11 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
         await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
             triggered=True,
-            event_type="FRIDGE_OPEN",
+            event_type="DOOR_SENSOR_ANOMALY",
             deviation_score=4.0,
             severity="MEDIUM",
             sensor="magnetic",
+            reason="magnetic state changed — door or enclosure opened",
         )
 
     # ── Vector catch-all (multi-variate anomaly) ─────────────────────────────
@@ -120,16 +123,3 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
     return AnomalyResult(triggered=False)
 
 
-def _classify_temp_event(payload: SensorPayload) -> str:
-    accel_mag = (payload.accel_x ** 2 + payload.accel_y ** 2 + payload.accel_z ** 2) ** 0.5
-    if accel_mag < 0.5:
-        return "STOVE_LEFT_ON" if payload.temperature_c > 40 else "IRON_LEFT_ON"
-    return "FIRE_RISK"
-
-
-def _classify_sound_event(payload: SensorPayload) -> str:
-    if 300 < payload.sound_level < 500:
-        return "FAUCET_RUNNING"
-    if payload.sound_level < 300:
-        return "WATER_DRIPPING"
-    return "APPLIANCE_FAULT"

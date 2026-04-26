@@ -59,10 +59,13 @@ async def read_and_score(ctx: Context) -> None:
     if not result.triggered:
         return
 
+    _SEP = "─" * 56
+    ctx.logger.info(_SEP)
     ctx.logger.info(
-        f"Anomaly detected: {result.event_type} — {result.deviation_score:.1f}x "
-        f"({result.severity}) via {result.sensor}"
+        f"ANOMALY DETECTED  {result.event_type}"
+        f"  score={result.deviation_score:.1f}x  severity={result.severity}  sensor={result.sensor}"
     )
+    ctx.logger.info(_SEP)
 
     if not TRIAGE_AGENT_ADDRESS:
         ctx.logger.warning("TRIAGE_AGENT_ADDRESS not set — run scripts/register_agents.py")
