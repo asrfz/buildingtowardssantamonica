@@ -33,12 +33,16 @@ from agents.agent_messages import (
 
 logger = logging.getLogger(__name__)
 
+
+def _api_base() -> str:
+    return settings.HOMEPULSE_API_BASE.rstrip("/")
+
+
 vision_agent = Agent(
     name="homepulse_vision",
     seed=settings.FETCHAI_AGENT_SEED + "_vision",
 )
 
-_FASTAPI_BASE = "http://localhost:8000"
 
 
 async def _request_browser_frame(event_id: str, timeout: float = 10.0) -> str | None:
@@ -46,9 +50,10 @@ async def _request_browser_frame(event_id: str, timeout: float = 10.0) -> str | 
     Ask the browser to capture a frame, then poll until it arrives.
     Returns base64 JPEG string or None on timeout.
     """
+    base = _api_base()
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            await client.post(f"{_FASTAPI_BASE}/voice/push", json={
+            await client.post(f"{base}/voice/push", json={
                 "type": "capture",
                 "data": {"event_id": event_id},
             })
@@ -62,7 +67,7 @@ async def _request_browser_frame(event_id: str, timeout: float = 10.0) -> str | 
         await asyncio.sleep(0.5)
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"{_FASTAPI_BASE}/vision/frame/{event_id}")
+                resp = await client.get(f"{base}/vision/frame/{event_id}")
                 if resp.status_code == 200:
                     return resp.json()["image_b64"]
         except Exception:

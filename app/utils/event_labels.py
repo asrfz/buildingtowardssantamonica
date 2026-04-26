@@ -17,6 +17,7 @@ EVENT_LABELS: dict[str, str] = {
     "LIGHTS_OFF": "Lights Left Off",
     "LIGHTS_ON": "Lights On",
     "LIGHT_STATE_CHANGED": "Light State Changed",
+    "UNCONFIRMED_SENSOR_EVENT": "Sensor alert (not visually confirmed)",
 }
 
 

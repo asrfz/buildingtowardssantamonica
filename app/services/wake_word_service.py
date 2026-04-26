@@ -28,6 +28,7 @@ import urllib.request
 
 import numpy as np
 
+from app.config import settings
 from app.services.stt_service import transcribe_sync, numpy_to_wav_bytes
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,9 @@ WAKE_WORDS = [
     "homepulse",
 ]
 
-_VOICE_PUSH_URL = "http://127.0.0.1:8000/voice/push"
+
+def _voice_push_url() -> str:
+    return f"{settings.HOMEPULSE_API_BASE.rstrip('/')}/voice/push"
 
 
 def _normalize_for_wake(s: str) -> str:
@@ -79,7 +82,7 @@ def _push_wake_ack() -> None:
             }
         ).encode("utf-8")
         req = urllib.request.Request(
-            _VOICE_PUSH_URL,
+            _voice_push_url(),
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",

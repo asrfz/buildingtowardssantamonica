@@ -53,6 +53,7 @@ class UserHistoryContext(Model):
     """history_agent → monitor_agent (Milestone 2)"""
     event_id: str
     user_id: str
+    triage_event_type: str  # coarse label from sensor/triage — anchor when no camera proof
     sensor_payload: dict
     deviation_score: float
     recent_events: list

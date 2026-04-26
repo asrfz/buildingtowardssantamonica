@@ -89,11 +89,16 @@ def _reason_about_event_sync(
     day_type: str,
     image_b64: str | None = None,
     image_media_type: str = "image/jpeg",
+    triage_event_type: str = "",
 ) -> dict:
-    prompt = f"""You are HomePulse, a household safety AI for elderly users.
+    has_image = bool(image_b64 and image_media_type in _MEDIA_ALLOW)
+    locked_type = (triage_event_type or "").strip() or "UNCONFIRMED_SENSOR_EVENT"
+
+    if has_image:
+        prompt = f"""You are HomePulse, a household safety AI for elderly users.
 
 Analyze this household anomaly and determine the appropriate response.
-{"You can see the cropped alert image attached." if image_b64 else f"Cropped image URL (may be unavailable in this request): {image_url}"}
+You can see the cropped alert image attached.
 
 Sensor data: {sensor_data}
 Deviation: {deviation_score:.1f}x above baseline
@@ -103,11 +108,34 @@ User behavioral schema: {behavioral_schema}
 
 Respond with JSON only:
 {{
-  "confirmed_event_type": "STOVE_LEFT_ON|FRIDGE_OPEN|FAUCET_RUNNING|WATER_DRIPPING|IRON_LEFT_ON|APPLIANCE_FAULT|FIRE_RISK|FALL_DETECTED",
+  "confirmed_event_type": "STOVE_LEFT_ON|FRIDGE_OPEN|FAUCET_RUNNING|WATER_DRIPPING|IRON_LEFT_ON|APPLIANCE_FAULT|FIRE_RISK|FALL_DETECTED|MULTIVARIATE_ANOMALY|SOUND_ANOMALY|TEMPERATURE_ANOMALY|DOOR_SENSOR_ANOMALY|LIGHT_STATE_CHANGED|OBJECT_DROPPED|UNCONFIRMED_SENSOR_EVENT",
   "severity": "LOW|MEDIUM|HIGH|CRITICAL",
   "recommended_action": "one sentence for the user",
   "suggested_service": "plumber|fire_department|appliance_repair|emergency_services|none",
   "reasoning": "two sentences max"
+}}"""
+    else:
+        prompt = f"""You are HomePulse, a household safety AI for elderly users.
+
+**No camera image is available for this alert.** Do not use past incidents, behavioral history, or patterns from other days — that context has been withheld on purpose.
+
+You must **keep the same coarse classification as triage** (sensor-only). Do not rename it to a specific appliance (e.g. do not output FRIDGE_OPEN, STOVE_LEFT_ON, or FAUCET_RUNNING) unless you have a verified image.
+
+Triage classification (use this exact string for confirmed_event_type): {locked_type}
+
+Sensor data: {sensor_data}
+Deviation: {deviation_score:.1f}x above baseline
+Time: {hour}:00 {day_type}
+
+Write a cautious recommended_action: suggest the user visually check the relevant area (doors, noise source, temperature) without claiming a specific appliance by name unless locked_type already names one.
+
+Respond with JSON only:
+{{
+  "confirmed_event_type": "{locked_type}",
+  "severity": "LOW|MEDIUM|HIGH|CRITICAL",
+  "recommended_action": "one sentence for the user",
+  "suggested_service": "plumber|fire_department|appliance_repair|emergency_services|none",
+  "reasoning": "two sentences max — cite only current sensor readings"
 }}"""
 
     if image_b64 and image_media_type in _MEDIA_ALLOW:
@@ -130,7 +158,10 @@ Respond with JSON only:
         max_tokens=400,
         messages=[{"role": "user", "content": user_content}],
     )
-    return _parse_json(response.content[0].text)
+    decision = _parse_json(response.content[0].text)
+    if not has_image:
+        decision["confirmed_event_type"] = locked_type
+    return decision
 
 
 async def _fetch_monitor_image(
@@ -160,6 +191,7 @@ async def reason_about_event(
     behavioral_schema: dict,
     hour: int,
     day_type: str,
+    triage_event_type: str = "",
 ) -> dict:
     b64, media = await _fetch_monitor_image(image_url)
     return await asyncio.to_thread(
@@ -173,6 +205,7 @@ async def reason_about_event(
         day_type,
         b64,
         media,
+        triage_event_type,
     )
 
 

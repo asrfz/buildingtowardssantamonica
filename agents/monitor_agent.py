@@ -66,7 +66,11 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
     hour = now.hour
     day_type = "weekend" if now.weekday() >= 5 else "weekday"
 
-    ctx.logger.info(f"[4/5] MONITOR  both results in for event {event_id[:8]} — calling Claude reasoning")
+    has_frame = bool(vision.cropped_url and vision.cropped_url.strip())
+    ctx.logger.info(
+        f"[4/5] MONITOR  both results in for event {event_id[:8]} — calling Claude reasoning "
+        f"(image={'yes' if has_frame else 'no'}, triage_type={history.triage_event_type})"
+    )
 
     try:
         decision = await claude_service.reason_about_event(
@@ -77,6 +81,7 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
             behavioral_schema=history.behavioral_schema,
             hour=hour,
             day_type=day_type,
+            triage_event_type=history.triage_event_type,
         )
     except Exception as e:
         ctx.logger.error(f"Claude reasoning failed for event {event_id}: {e}")
@@ -126,7 +131,8 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
             _alert_ui_sent.clear()
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
-                await client.post("http://localhost:8000/voice/push", json={
+                push_url = f"{settings.HOMEPULSE_API_BASE.rstrip('/')}/voice/push"
+                await client.post(push_url, json={
                     "type": "alert",
                     "text": alert_text,
                     "data": {

@@ -43,12 +43,16 @@ from agents.agent_messages import VoiceAlert
 
 logger = logging.getLogger(__name__)
 
+
+def _api_base() -> str:
+    return settings.HOMEPULSE_API_BASE.rstrip("/")
+
+
 voice_agent = Agent(
     name="homepulse_voice",
     seed=settings.FETCHAI_AGENT_SEED + "_voice",
 )
 
-_FASTAPI_BASE = "http://localhost:8000"
 MAX_TICKS = 10
 NOT_FOUND_GRACE = 2
 # Same spoken guidance this many times in a row → email emergency contact ("more than 3" → 4th hit)
@@ -154,7 +158,7 @@ async def _request_browser_frame(tick_id: str, timeout: float = 5.0) -> str | No
     """
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            await client.post(f"{_FASTAPI_BASE}/voice/push", json={
+            await client.post(f"{_api_base()}/voice/push", json={
                 "type": "capture",
                 "data": {"event_id": tick_id},
             })
@@ -168,7 +172,7 @@ async def _request_browser_frame(tick_id: str, timeout: float = 5.0) -> str | No
         await asyncio.sleep(0.4)
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"{_FASTAPI_BASE}/vision/frame/{tick_id}")
+                resp = await client.get(f"{_api_base()}/vision/frame/{tick_id}")
                 if resp.status_code == 200:
                     return resp.json()["image_b64"]
         except Exception:
