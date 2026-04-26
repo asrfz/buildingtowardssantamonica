@@ -8,8 +8,33 @@ from app.config import settings
 
 _reading_queue: queue.Queue = queue.Queue(maxsize=10)
 _started = False
+_serial_stopped_access: bool = False  # True if we gave up on COM (port busy); no retries
 
 logger = logging.getLogger(__name__)
+
+
+def _is_port_access_denied(exc: BaseException) -> bool:
+    """Windows / pyserial: another process holds the COM port or we lack rights."""
+    if isinstance(exc, PermissionError):
+        return True
+    errno = getattr(exc, "errno", None)
+    if errno in (13, 5):
+        return True
+    winerror = getattr(exc, "winerror", None)
+    if winerror == 5:
+        return True
+    text = str(exc).lower()
+    if "access is denied" in text or "permissionerror" in text:
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None and cause is not exc:
+        return _is_port_access_denied(cause)
+    return False
+
+
+def serial_reader_gave_up() -> bool:
+    """True if hardware serial was abandoned due to access denied (use simulate or free COM)."""
+    return _serial_stopped_access
 
 
 def _normalize_payload(raw: dict) -> dict:
@@ -56,18 +81,25 @@ def inject_reading(payload: dict) -> None:
 
 
 def _serial_loop() -> None:
+    global _serial_stopped_access
     import serial
     from serial.serialutil import SerialException
 
     port = settings.ARDUINO_SERIAL_PORT
     baud = settings.ARDUINO_BAUD_RATE
-    permission_logged = False
+    delay = float(settings.ARDUINO_SERIAL_CONNECT_DELAY_SEC or 0.0)
+    if delay > 0:
+        logger.info(
+            "Waiting %.1fs before opening %s (set ARDUINO_SERIAL_CONNECT_DELAY_SEC=0 to skip)",
+            delay,
+            port,
+        )
+        time.sleep(delay)
 
     while True:
         retry_s = 5
         try:
             with serial.Serial(port, baud, timeout=2) as ser:
-                permission_logged = False
                 logger.info("Serial connected on %s @ %s baud", port, baud)
                 while True:
                     line = ser.readline().decode("utf-8", errors="ignore").strip()
@@ -83,34 +115,30 @@ def _serial_loop() -> None:
                         _reading_queue.put_nowait(payload)
                     except json.JSONDecodeError:
                         logger.warning("Bad serial JSON: %r", line)
-        except PermissionError as e:
-            retry_s = 12
-            if not permission_logged:
-                logger.error(
-                    "Serial port %s: access denied. Another program has the port open "
-                    "(often Arduino IDE Serial Monitor, a second HomePulse process, or a serial "
-                    "terminal). Close it so only one reader uses %s. Error: %s",
-                    port,
+        except (SerialException, PermissionError, OSError) as e:
+            # Cannot share COM on Windows — retrying forever just spams logs.
+            if _is_port_access_denied(e):
+                _serial_stopped_access = True
+                logger.warning(
+                    "Serial %s: access denied — stopping serial reader permanently for this run. "
+                    "Agents keep running; use POST /sensor/simulate or free the port and restart "
+                    "run_agents.py. (%s)",
                     port,
                     e,
                 )
-                permission_logged = True
+                return
+            if isinstance(e, SerialException):
+                logger.exception(
+                    "Serial device error on %s: %s — retrying in %ss", port, e, retry_s
+                )
             else:
-                logger.error(
-                    "Serial port %s still unavailable (PermissionError) — retrying in %ss",
+                logger.exception(
+                    "Serial OS error on %s (errno=%s): %s — retrying in %ss",
                     port,
+                    getattr(e, "errno", None),
+                    e,
                     retry_s,
                 )
-        except SerialException as e:
-            logger.exception("Serial device error on %s: %s — retrying in %ss", port, e, retry_s)
-        except OSError as e:
-            logger.exception(
-                "Serial OS error on %s (errno=%s): %s — retrying in %ss",
-                port,
-                getattr(e, "errno", None),
-                e,
-                retry_s,
-            )
         except Exception:
             logger.exception("Unexpected serial reader error on %s — retrying in %ss", port, retry_s)
 

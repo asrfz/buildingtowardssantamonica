@@ -15,9 +15,12 @@ class Settings(BaseSettings):
     GMAIL_ADDRESS: str = ""
     GMAIL_APP_PASSWORD: str = ""
 
-    # Arduino Serial
+    # Arduino Serial (set ARDUINO_SERIAL_ENABLED=false to run agents without COM / use POST /sensor/simulate only)
+    ARDUINO_SERIAL_ENABLED: bool = True
     ARDUINO_SERIAL_PORT: str = "COM3"
     ARDUINO_BAUD_RATE: int = 9600
+    # Seconds to wait before first COM open (e.g. 2–3 after closing Arduino IDE / Serial Monitor).
+    ARDUINO_SERIAL_CONNECT_DELAY_SEC: float = 0.0
     WEBCAM_INDEX: int = 0
 
     # FetchAI

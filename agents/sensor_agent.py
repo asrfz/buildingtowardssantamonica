@@ -20,8 +20,17 @@ sensor_agent = Agent(
 @sensor_agent.on_event("startup")
 async def startup(ctx: Context) -> None:
     await connect_db()
-    start_serial_reader()
-    ctx.logger.info(f"sensor_agent online — address: {sensor_agent.address}")
+    if settings.ARDUINO_SERIAL_ENABLED:
+        start_serial_reader()
+        ctx.logger.info(
+            "sensor_agent online — serial reader on %s",
+            settings.ARDUINO_SERIAL_PORT,
+        )
+    else:
+        ctx.logger.warning(
+            "sensor_agent online — ARDUINO_SERIAL_ENABLED=false (no COM open; use /sensor/simulate)"
+        )
+    ctx.logger.info(f"sensor_agent address: {sensor_agent.address}")
 
 
 @sensor_agent.on_message(ChatMessage)
