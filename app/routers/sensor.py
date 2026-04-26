@@ -38,10 +38,11 @@ async def simulate_reading(payload: SensorPayload) -> EventResponse:
     Use this endpoint to trigger the full agent pipeline without Arduino hardware.
     """
     inject_reading(payload.model_dump(mode="json"))
+    temp_text = f"{payload.temperature_c}°C" if payload.temperature_c is not None else "n/a"
     return EventResponse(
         event_id="",
         status="injected",
-        message=f"Reading injected — temp={payload.temperature_c}°C, sound={payload.sound_level}",
+        message=f"Reading injected — temp={temp_text}, sound={payload.sound_level}",
     )
 
 

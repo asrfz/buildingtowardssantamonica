@@ -15,6 +15,27 @@ class AnomalyResult:
 
 
 async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResult:
+    # Hard threshold path from Arduino triggers (real-time edge events).
+    if payload.drop_detected or (payload.motion_triggered and payload.gyro_triggered):
+        return AnomalyResult(
+            triggered=True,
+            event_type="OBJECT_DROPPED",
+            deviation_score=4.5,
+            severity="MEDIUM",
+            sensor="accelerometer",
+            reason="arduino_threshold_drop",
+        )
+
+    if payload.light_change_detected:
+        return AnomalyResult(
+            triggered=True,
+            event_type="LIGHT_STATE_CHANGED",
+            deviation_score=3.0,
+            severity="LOW",
+            sensor="light",
+            reason="arduino_threshold_light_delta",
+        )
+
     hour = payload.timestamp.hour
     day_type = "weekend" if payload.timestamp.weekday() >= 5 else "weekday"
 
