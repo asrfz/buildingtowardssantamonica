@@ -1,5 +1,7 @@
-from fastapi import APIRouter, HTTPException
-from datetime import datetime
+from fastapi import APIRouter, HTTPException, Request
+from datetime import datetime, timezone
+from typing import Any
+
 from app.models.sensor import SensorPayload
 from app.models.event import EventResponse
 from app.services.anomaly_detector import score_reading
@@ -9,6 +11,25 @@ from app.utils.serial_reader import inject_reading
 from app.database import get_db
 
 router = APIRouter()
+
+# Cross-process queue: FastAPI and sensor_agent (run_agents.py) are different
+# processes — in-memory inject_reading() alone never reaches the bureau.
+SIMULATION_QUEUE_COLL = "sensor_simulation_queue"
+
+
+def _parse_simulate_json(body: dict[str, Any]) -> tuple[SensorPayload, dict[str, Any] | None]:
+    """
+    Accept legacy flat SensorPayload JSON, or wrapped:
+    { "payload": { ... }, "force_triage": { "event_type", "severity", ... } }
+    """
+    force = body.get("force_triage")
+    if force is not None and not isinstance(force, dict):
+        force = None
+    inner = body.get("payload")
+    if isinstance(inner, dict):
+        return SensorPayload(**inner), force
+    flat = {k: v for k, v in body.items() if k != "force_triage"}
+    return SensorPayload(**flat), force
 
 
 @router.post("/reading", response_model=EventResponse)
@@ -32,17 +53,43 @@ async def receive_reading(payload: SensorPayload) -> EventResponse:
 
 
 @router.post("/simulate", response_model=EventResponse)
-async def simulate_reading(payload: SensorPayload) -> EventResponse:
+async def simulate_reading(request: Request) -> EventResponse:
     """
-    Inject a simulated sensor reading into the serial queue.
-    Use this endpoint to trigger the full agent pipeline without Arduino hardware.
+    Queue a reading for sensor_agent (MongoDB), and also push the in-memory queue
+    (only useful if API and agents share one process — normally ignored by bureau).
+
+    Body: flat SensorPayload fields, or { "payload": {...}, "force_triage": {...} }.
+    force_triage skips anomaly scoring and sends IrregularityEvent directly — use when
+    baselines are missing or for deterministic demos (e.g. loud noise).
     """
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("JSON object expected")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}") from e
+
+    try:
+        payload, force_triage = _parse_simulate_json(body)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid simulate payload: {e}") from e
+
+    db = get_db()
+    doc: dict[str, Any] = {
+        "payload": payload.model_dump(mode="json"),
+        "force_triage": force_triage,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db[SIMULATION_QUEUE_COLL].insert_one(doc)
+
     inject_reading(payload.model_dump(mode="json"))
+
     temp_text = f"{payload.temperature_c}°C" if payload.temperature_c is not None else "n/a"
+    extra = " + force_triage" if force_triage else ""
     return EventResponse(
         event_id="",
-        status="injected",
-        message=f"Reading injected — temp={temp_text}, sound={payload.sound_level}",
+        status="queued",
+        message=f"Queued for sensor_agent (Mongo){extra} — temp={temp_text}, sound={payload.sound_level}",
     )
 
 

@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # App Settings
     APP_ENV: str = "development"
     DEFAULT_USER_ID: str = ""
+    # Demo / fallback: when voice guidance repeats, email this address. If empty, uses first
+    # emergency_contacts[].email on the DEFAULT_USER_ID user document.
+    EMERGENCY_NOTIFY_EMAIL: str = ""
     CANCEL_WINDOW_SECONDS: int = 60
     THRESHOLD_MULTIPLIER: float = 2.5
     CALIBRATION_HOURS: int = 48

@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CloudinaryPlayground } from './components/CloudinaryPlayground'
 import { apiBase, apiJson } from './lib/api'
-import { PRESETS, basePayload } from './lib/payloads'
+import { PRESETS, basePayload, simulateBody, FORCE_LOUD_NOISE, type ForceTriage } from './lib/payloads'
 
 const USER_STORAGE = 'homepulse_dev_user_id'
 
 type Tab = 'console' | 'media'
 
 type LiveAlert = {
+  /** Mongo event_id when present — dedupes duplicate WebSocket deliveries */
   id: string
   label: string
   severity: string
@@ -23,9 +24,17 @@ const SEV_COLORS: Record<string, { border: string; bg: string; badge: string; te
   CRITICAL: { border: '#dc2626', bg: '#fef2f2', badge: '#fca5a5', text: '#450a0a' },
 }
 
+function initialUserId(): string {
+  const saved = localStorage.getItem(USER_STORAGE)?.trim()
+  if (saved) return saved
+  const vite = import.meta.env.VITE_DEFAULT_USER_ID?.trim()
+  if (vite) return vite
+  return ''
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('console')
-  const [userId, setUserId] = useState(() => localStorage.getItem(USER_STORAGE) || '')
+  const [userId, setUserId] = useState(initialUserId)
   const [searchQ, setSearchQ] = useState('stove')
   const [chatQ, setChatQ] = useState('What happened at home this week?')
   const [log, setLog] = useState<string[]>([])
@@ -35,7 +44,10 @@ export default function App() {
   const [alerts, setAlerts] = useState<LiveAlert[]>([])
   const [cameraError, setCameraError] = useState('')
   const [cameraReady, setCameraReady] = useState(false)
+  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null)
+  const [cameraRetryToken, setCameraRetryToken] = useState(0)
   const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const cameraReadyRef = useRef(false)
 
@@ -43,18 +55,112 @@ export default function App() {
     localStorage.setItem(USER_STORAGE, userId)
   }, [userId])
 
-  // Request camera on mount
+  // One-time: fill User ID from backend DEFAULT_USER_ID if localStorage + Vite env are empty.
+  // The browser never sees repo root .env; APP_ENV=development exposes this id via the API.
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-      .then((stream) => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-          cameraReadyRef.current = true
-          setCameraReady(true)
-        }
-      })
-      .catch(() => setCameraError('Camera permission denied — frame capture disabled'))
+    const saved = localStorage.getItem(USER_STORAGE)?.trim()
+    const vite = import.meta.env.VITE_DEFAULT_USER_ID?.trim()
+    if (saved || vite) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await fetch(`${apiBase()}/integration/dev-context`)
+        if (!r.ok || cancelled) return
+        const j = (await r.json()) as { default_user_id?: string }
+        const id = j.default_user_id?.trim()
+        if (id && !cancelled) setUserId(id)
+      } catch {
+        /* API not up */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
+
+  // Camera only while Testing tab is mounted (video element exists). Cleans up tracks on tab change / unmount.
+  useEffect(() => {
+    if (tab !== 'console') {
+      setMediaStream((prev) => {
+        prev?.getTracks().forEach((t) => t.stop())
+        return null
+      })
+      cameraReadyRef.current = false
+      setCameraReady(false)
+      return
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera API not available (use HTTPS or localhost, not a plain IP over HTTP).')
+      return
+    }
+
+    let cancelled = false
+    let stream: MediaStream | null = null
+    setCameraError('')
+
+    ;(async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 1280 } },
+          audio: false,
+        })
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop())
+          return
+        }
+        setMediaStream(stream)
+      } catch (e: unknown) {
+        if (cancelled) return
+        const name = e instanceof DOMException ? e.name : ''
+        if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+          setCameraError(
+            'Camera blocked — click “Retry camera” below, allow the site in the browser lock icon, and disable “Block” for camera.',
+          )
+        } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+          setCameraError('No camera found on this device.')
+        } else {
+          const msg = e instanceof Error ? e.message : String(e)
+          setCameraError(`Camera error: ${msg}`)
+        }
+        setMediaStream(null)
+        cameraReadyRef.current = false
+        setCameraReady(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      stream?.getTracks().forEach((t) => t.stop())
+      setMediaStream((prev) => {
+        prev?.getTracks().forEach((t) => t.stop())
+        return null
+      })
+      cameraReadyRef.current = false
+      setCameraReady(false)
+    }
+  }, [tab, cameraRetryToken])
+
+  // Attach stream to <video> when ref + stream exist (fixes race where getUserMedia resolved before ref was set).
+  useEffect(() => {
+    if (tab !== 'console') return
+    const el = videoRef.current
+    if (!el || !mediaStream) {
+      cameraReadyRef.current = false
+      setCameraReady(false)
+      return
+    }
+    el.srcObject = mediaStream
+    const onMeta = () => {
+      cameraReadyRef.current = true
+      setCameraReady(true)
+      setCameraError('')
+    }
+    el.addEventListener('loadedmetadata', onMeta)
+    return () => {
+      el.removeEventListener('loadedmetadata', onMeta)
+    }
+  }, [mediaStream, tab])
 
   // Capture a frame from the live video and POST it to /vision/frame
   const captureAndPostFrame = useCallback(async (eventId: string) => {
@@ -77,42 +183,65 @@ export default function App() {
     }
   }, [])
 
-  // Auto-connect WebSocket for live alert feed + capture trigger
+  // Single WebSocket + dedupe alerts by event_id (multiple tabs / strict mode / reconnects used to duplicate cards).
   useEffect(() => {
     const base = apiBase().replace(/^http/, 'ws')
     const url = `${base}/voice/ws`
+    let stopped = false
 
     const connect = () => {
+      if (stopped) return
+      if (wsRef.current?.readyState === WebSocket.OPEN) return
+
       const ws = new WebSocket(url)
       wsRef.current = ws
 
       ws.onmessage = (ev) => {
         setWsLines((prev) => [...prev.slice(-40), ev.data])
         try {
-          const msg = JSON.parse(ev.data)
+          const msg = JSON.parse(ev.data) as {
+            type?: string
+            data?: Record<string, string | undefined>
+            text?: string
+          }
           if (msg.type === 'capture' && msg.data?.event_id) {
             captureAndPostFrame(msg.data.event_id)
           } else if (msg.type === 'alert' && msg.data) {
-            setAlerts((prev) => [
-              {
-                id: `${Date.now()}`,
-                label: msg.data.label || msg.data.event_type || 'Alert',
-                severity: (msg.data.severity || 'MEDIUM').toUpperCase(),
-                recommended_action: msg.data.recommended_action || msg.text || '',
-                image_url: msg.data.image_url || undefined,
-                time: new Date().toLocaleTimeString(),
-              },
-              ...prev,
-            ].slice(0, 5))
+            const eventId = typeof msg.data.event_id === 'string' ? msg.data.event_id : ''
+            const label = String(msg.data.label || msg.data.event_type || 'Alert')
+            const severity = String(msg.data.severity || 'MEDIUM').toUpperCase()
+            const recommended = String(msg.data.recommended_action || msg.text || '')
+            const imageUrl = msg.data.image_url || undefined
+            const time = new Date().toLocaleTimeString()
+            setAlerts((prev) => {
+              const id = eventId || `anon-${label}-${recommended.slice(0, 40)}`
+              const next: LiveAlert = { id, label, severity, recommended_action: recommended, image_url: imageUrl, time }
+              const without = prev.filter((a) => a.id !== id)
+              return [next, ...without].slice(0, 6)
+            })
           }
-        } catch {}
+        } catch {
+          /* ignore */
+        }
       }
-      ws.onclose = () => setTimeout(connect, 2000)
+      ws.onclose = () => {
+        wsRef.current = null
+        if (stopped) return
+        reconnectTimerRef.current = setTimeout(connect, 2000)
+      }
       ws.onerror = () => ws.close()
     }
 
     connect()
-    return () => { wsRef.current?.close() }
+    return () => {
+      stopped = true
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      wsRef.current?.close()
+      wsRef.current = null
+    }
   }, [captureAndPostFrame])
 
   const pushLog = useCallback((line: string) => {
@@ -141,8 +270,12 @@ export default function App() {
   )
 
   const simulatePreset = (name: keyof typeof PRESETS) => {
-    const body = JSON.stringify(PRESETS[name]())
+    const body = simulateBody(PRESETS[name]())
     run(`Simulate ${name}`, '/sensor/simulate', { method: 'POST', body })
+  }
+
+  const simulateWithForce = (label: string, payload: Record<string, unknown>, force: ForceTriage) => {
+    run(label, '/sensor/simulate', { method: 'POST', body: simulateBody(payload, force) })
   }
 
   const refreshEvents = () => {
@@ -255,10 +388,31 @@ export default function App() {
                 <span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#22c55e', marginLeft: 8 }}>● live</span>
               )}
             </h2>
-            {cameraError
-              ? <p className="warn">{cameraError}</p>
-              : <p className="hint">Active — frame sent to vision agent automatically when an irregularity is detected.</p>
-            }
+            {cameraError ? <p className="warn">{cameraError}</p> : null}
+            {!cameraError && (
+              <p className="hint">
+                {cameraReady
+                  ? 'Active — frame sent to vision agent when an irregularity is detected.'
+                  : 'Starting camera… If blocked, use Retry and allow camera for this site.'}
+              </p>
+            )}
+            <div className="btn-row" style={{ marginBottom: 8 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setCameraError('')
+                  setMediaStream((prev) => {
+                    prev?.getTracks().forEach((t) => t.stop())
+                    return null
+                  })
+                  cameraReadyRef.current = false
+                  setCameraReady(false)
+                  setCameraRetryToken((n) => n + 1)
+                }}
+              >
+                Retry camera
+              </button>
+            </div>
             <video
               ref={videoRef}
               autoPlay
@@ -281,12 +435,17 @@ export default function App() {
               <span>User ID (MongoDB)</span>
               <input
                 type="text"
-                placeholder="DEFAULT_USER_ID from .env"
+                placeholder="Auto-filled from API / VITE_DEFAULT_USER_ID — edit to test another user"
                 value={userId}
                 onChange={(e) => setUserId(e.target.value)}
                 className="mono"
               />
             </label>
+            <p className="hint" style={{ marginTop: -6 }}>
+              Same value as <code>DEFAULT_USER_ID</code> in the API <code>.env</code>. The UI cannot read that file;
+              in development it loads from <code>GET /integration/dev-context</code> (or set{' '}
+              <code>VITE_DEFAULT_USER_ID</code> in <code>frontend/.env.local</code>).
+            </p>
             <div className="btn-row">
               <a className="link-btn" href={`${apiBase()}/docs`} target="_blank" rel="noreferrer">
                 OpenAPI docs
@@ -297,11 +456,55 @@ export default function App() {
             </div>
           </section>
 
+          <section className="card live-demos">
+            <h2>Live demos — no Arduino</h2>
+            <p className="hint">
+              Readings are <strong>queued in MongoDB</strong> so <code>sensor_agent</code> in{' '}
+              <code>run_agents.py</code> sees them (separate process from FastAPI). Keep API + bureau running.
+              Wait up to one sensor interval (~5s), then watch logs / events / alerts.
+            </p>
+            <div className="btn-row wrap live-demo-actions">
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={busy}
+                onClick={() =>
+                  simulateWithForce('Loud noise → full pipeline', PRESETS.loudNoise(), FORCE_LOUD_NOISE)
+                }
+              >
+                Loud noise (full pipeline)
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => simulatePreset('loudNoise')}
+                title="Requires sensor baselines in Mongo; use Loud noise (full pipeline) if scoring returns normal."
+              >
+                Loud noise (score only)
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  simulateWithForce('Force stove anomaly', PRESETS.stove(), {
+                    event_type: 'TEMPERATURE_ANOMALY',
+                    severity: 'HIGH',
+                    deviation_score: 8.0,
+                    reason: 'Simulated stove / heat (demo bypass)',
+                    sensor: 'temperature',
+                  })
+                }
+              >
+                Stove (bypass scoring)
+              </button>
+            </div>
+          </section>
+
           <section className="card">
             <h2>Sensor → agent pipeline</h2>
             <p className="hint">
-              <code>POST /sensor/simulate</code> injects a reading for <code>sensor_agent</code> (needs bureau
-              running).
+              <code>POST /sensor/simulate</code> queues a reading in Mongo + legacy in-memory queue. Needs{' '}
+              <code>DEFAULT_USER_ID</code> in <code>.env</code> for the bureau.
             </p>
             <div className="btn-row wrap">
               <button type="button" disabled={busy} onClick={() => simulatePreset('normal')}>

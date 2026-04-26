@@ -24,11 +24,13 @@ import httpx
 from dataclasses import dataclass
 from datetime import datetime
 
+from bson import ObjectId
 from uagents import Agent, Context
 from uagents_core.contrib.protocols.chat import ChatMessage
 
 from app.config import settings
-from app.database import connect_db
+from app.database import connect_db, get_db
+from app.services.gmail_service import send_voice_guidance_escalation_sync
 from app.services.tts_service import speak, speak_async, stop_all
 from app.services.spatial_service import (
     object_initial_alert,
@@ -49,6 +51,8 @@ voice_agent = Agent(
 _FASTAPI_BASE = "http://localhost:8000"
 MAX_TICKS = 10
 NOT_FOUND_GRACE = 2
+# Same spoken guidance this many times in a row → email emergency contact ("more than 3" → 4th hit)
+VOICE_SAME_PHRASE_ESCALATE_STREAK = 4
 
 
 @dataclass
@@ -59,9 +63,88 @@ class CorrectionState:
     last_object_zone: dict
     tick_count: int = 0
     not_found_ticks: int = 0
+    # Same spoken guidance 3 ticks in a row → email emergency contact
+    last_spoken_norm: str | None = None
+    same_phrase_streak: int = 0
 
 
 _active_corrections: dict[str, CorrectionState] = {}
+
+
+def _streak_should_escalate(state: CorrectionState, phrase: str) -> bool:
+    norm = phrase.strip().lower()
+    if not norm:
+        return False
+    if state.last_spoken_norm == norm:
+        state.same_phrase_streak += 1
+    else:
+        state.last_spoken_norm = norm
+        state.same_phrase_streak = 1
+    return state.same_phrase_streak >= VOICE_SAME_PHRASE_ESCALATE_STREAK
+
+
+def _reset_speech_streak(state: CorrectionState) -> None:
+    state.last_spoken_norm = None
+    state.same_phrase_streak = 0
+
+
+async def _emergency_recipients(user_id: str) -> list[str]:
+    if settings.EMERGENCY_NOTIFY_EMAIL.strip():
+        return [settings.EMERGENCY_NOTIFY_EMAIL.strip()]
+    try:
+        db = get_db()
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+    except Exception:
+        return []
+    if not user:
+        return []
+    out: list[str] = []
+    for c in user.get("emergency_contacts") or []:
+        em = (c or {}).get("email")
+        if em:
+            out.append(em)
+    if not out and user.get("email"):
+        out.append(user["email"])
+    return out
+
+
+async def _escalate_repeated_phrase(ctx: Context, state: CorrectionState, phrase: str) -> None:
+    recipients = await _emergency_recipients(state.user_id)
+    if not recipients:
+        ctx.logger.warning(
+            "[VoiceAgent] Same guidance repeated 3x but no EMERGENCY_NOTIFY_EMAIL "
+            "or emergency_contacts — cannot send email"
+        )
+        speak(
+            "I need to reach someone but no emergency email is configured. Please check settings.",
+            correction=True,
+        )
+        return
+    loop = asyncio.get_running_loop()
+    ok = await loop.run_in_executor(
+        None,
+        lambda: send_voice_guidance_escalation_sync(
+            recipients,
+            event_id=state.event_id,
+            object_name=state.object_name,
+            repeated_phrase=phrase[:500],
+            user_id=state.user_id,
+        ),
+    )
+    if ok:
+        ctx.logger.info(
+            "[VoiceAgent] Escalation email sent after repeated guidance → %s",
+            recipients,
+        )
+        speak(
+            "I've emailed your emergency contact to check in. Please stay safe.",
+            correction=True,
+        )
+    else:
+        speak(
+            "I tried to notify your emergency contact but email did not send. Please ask someone for help.",
+            correction=True,
+        )
 
 
 async def _request_browser_frame(tick_id: str, timeout: float = 5.0) -> str | None:
@@ -152,6 +235,7 @@ async def correction_loop(ctx: Context) -> None:
 
         if state.tick_count > MAX_TICKS:
             ctx.logger.info(f"correction_loop: timeout for event {event_id}")
+            _reset_speech_streak(state)
             speak("I've lost track of the situation. Please check your surroundings carefully.", correction=True)
             resolved.append(event_id)
             continue
@@ -171,10 +255,16 @@ async def correction_loop(ctx: Context) -> None:
                 ctx.logger.info(
                     f"correction_loop: {state.object_name} gone ({state.not_found_ticks} ticks) — marking retrieved"
                 )
+                _reset_speech_streak(state)
                 speak(object_retrieved_phrase(state.object_name), correction=True)
                 resolved.append(event_id)
             else:
-                speak(object_lost_phrase(state.object_name, state.tick_count), correction=True)
+                lost_phrase = object_lost_phrase(state.object_name, state.tick_count)
+                if _streak_should_escalate(state, lost_phrase):
+                    await _escalate_repeated_phrase(ctx, state, lost_phrase)
+                    resolved.append(event_id)
+                else:
+                    speak(lost_phrase, correction=True)
             continue
 
         state.not_found_ticks = 0
@@ -192,11 +282,16 @@ async def correction_loop(ctx: Context) -> None:
 
         if phrase is None:
             ctx.logger.info(f"correction_loop: convergence reached for event {event_id}")
+            _reset_speech_streak(state)
             speak(object_retrieved_phrase(state.object_name), correction=True)
             resolved.append(event_id)
         else:
             ctx.logger.info(f"[Correction tick {state.tick_count}] {phrase}")
-            speak(phrase, correction=True)
+            if _streak_should_escalate(state, phrase):
+                await _escalate_repeated_phrase(ctx, state, phrase)
+                resolved.append(event_id)
+            else:
+                speak(phrase, correction=True)
 
     for event_id in resolved:
         _active_corrections.pop(event_id, None)

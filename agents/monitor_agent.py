@@ -26,6 +26,8 @@ monitor_agent = Agent(
 # In-memory state: collects history + vision results per event_id before reasoning.
 # Safe because uAgents event loop is single-threaded.
 _pending: dict[str, dict] = {}
+# One browser alert card per event (guards rare double-reason or multi-WS duplicates).
+_alert_ui_sent: set[str] = set()
 
 
 @monitor_agent.on_event("startup")
@@ -118,22 +120,28 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
         await speak_async(alert_text, correction=False)
     except Exception as e:
         ctx.logger.debug(f"TTS speak failed: {e}")
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            await client.post("http://localhost:8000/voice/push", json={
-                "type": "alert",
-                "text": alert_text,
-                "data": {
-                    "event_id": event_id,
-                    "event_type": confirmed_type,
-                    "label": event_label,
-                    "severity": severity,
-                    "recommended_action": recommended_action,
-                    "image_url": vision.cropped_url or vision.raw_url or "",
-                },
-            })
-    except Exception as e:
-        ctx.logger.debug(f"WebSocket alert push failed (FastAPI may not be running): {e}")
+    if event_id not in _alert_ui_sent:
+        _alert_ui_sent.add(event_id)
+        if len(_alert_ui_sent) > 2000:
+            _alert_ui_sent.clear()
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                await client.post("http://localhost:8000/voice/push", json={
+                    "type": "alert",
+                    "text": alert_text,
+                    "data": {
+                        "event_id": event_id,
+                        "event_type": confirmed_type,
+                        "label": event_label,
+                        "severity": severity,
+                        "recommended_action": recommended_action,
+                        "image_url": vision.cropped_url or vision.raw_url or "",
+                    },
+                })
+        except Exception as e:
+            ctx.logger.debug(f"WebSocket alert push failed (FastAPI may not be running): {e}")
+    else:
+        ctx.logger.info("[4/5] MONITOR  skipping duplicate UI alert for event %s", event_id[:8])
 
     if not ESCALATION_AGENT_ADDRESS:
         ctx.logger.warning("ESCALATION_AGENT_ADDRESS not set")

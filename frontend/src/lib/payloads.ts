@@ -1,3 +1,20 @@
+/** Optional: skip scoring and send this event straight to triage (works without baselines). */
+export type ForceTriage = {
+  event_type: string
+  severity?: string
+  deviation_score?: number
+  reason?: string
+  sensor?: string
+}
+
+/** Body for POST /sensor/simulate — flat reading or wrapped with force_triage. */
+export function simulateBody(payload: Record<string, unknown>, forceTriage?: ForceTriage) {
+  if (forceTriage) {
+    return JSON.stringify({ payload, force_triage: forceTriage })
+  }
+  return JSON.stringify(payload)
+}
+
 /** Minimal valid SensorPayload for POST /sensor/simulate — matches FastAPI model. */
 export function basePayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -39,4 +56,20 @@ export const PRESETS = {
       accel_y: 1.8,
       accel_z: 12.0,
     }),
+  /** Loud sound levels for UI — still needs baselines unless you use force_triage. */
+  loudNoise: () =>
+    basePayload({
+      sound_level: 920,
+      sound_triggered: 1,
+      temperature_c: 22.0,
+    }),
 } as const
+
+/** Deterministic SOUND_ANOMALY — bypasses baseline scoring (full agent pipeline). */
+export const FORCE_LOUD_NOISE: ForceTriage = {
+  event_type: 'SOUND_ANOMALY',
+  severity: 'HIGH',
+  deviation_score: 7.0,
+  reason: 'Simulated loud noise (demo — bypass scoring)',
+  sensor: 'sound',
+}
