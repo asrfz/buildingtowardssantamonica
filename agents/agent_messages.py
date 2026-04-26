@@ -5,7 +5,7 @@ from typing import Optional
 # Run `python scripts/register_agents.py` to print these, then paste them here.
 # DASHBOARD_AGENT_ADDRESS: required for voice_input → dashboard (VoiceQuery). Empty = voice queries won't route.
 # VOICE_INPUT_AGENT_ADDRESS: dashboard replies here (VoiceQueryResponse); can fall back to sender if wrong.
-DASHBOARD_AGENT_ADDRESS     = ""   # paste DASHBOARD_AGENT_ADDRESS line from register_agents.py output
+DASHBOARD_AGENT_ADDRESS     = "agent1qgcj7n4c3mtzk6smmgenl0mtgdxuxeway08kyn9zm0x0t7lduhe3kpcz3wd"
 SENSOR_AGENT_ADDRESS        = "agent1qthfw9s49lm0vajvk4cpxpws35qmqz8d0g3zf9gqx3dw267gtpdvure95fr"
 TRIAGE_AGENT_ADDRESS        = "agent1q0syk8pz50n9782exz46r0uwls9c2vlmkf7m09k3zhngal6zw4pgqwrjqef"
 HISTORY_AGENT_ADDRESS       = "agent1qglju8pw38fa8l48353jwdgf84rd8rfee30rg7seqwqwfpwefvrmk9fj4c7"
