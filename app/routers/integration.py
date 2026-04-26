@@ -5,12 +5,24 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from app.config import settings
 from app.database import get_db
 from app.schemas.integration_schema import ArduinoIngestRequest, ArduinoIngestResponse
 from app.services.agent_bridge_service import send_to_agent_dummy
 from app.services.arduino_contract_service import extract_json_contract_from_ino
 
 router = APIRouter()
+
+
+@router.get("/dev-context")
+async def dev_console_context() -> dict:
+    """
+    Non-secret defaults for the local dev console. Only available when APP_ENV=development
+    so production builds are not probed for IDs. Matches backend DEFAULT_USER_ID.
+    """
+    if settings.APP_ENV != "development":
+        raise HTTPException(status_code=404, detail="Not available")
+    return {"default_user_id": settings.DEFAULT_USER_ID or ""}
 
 
 @router.post("/arduino/ingest", response_model=ArduinoIngestResponse)

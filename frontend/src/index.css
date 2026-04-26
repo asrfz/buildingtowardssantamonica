@@ -81,6 +81,25 @@ code,
   box-shadow: 0 1px 2px rgb(15 23 42 / 6%);
 }
 
+.card.live-demos {
+  border-color: #14b8a6;
+  background: linear-gradient(180deg, #f0fdfa 0%, #fff 48%);
+}
+
+.card.live-demos h2 {
+  color: #0f766e;
+}
+
+.live-demo-actions .btn-primary {
+  background: #ea580c;
+  padding: 11px 18px;
+  font-size: 0.95rem;
+}
+
+.card.live-demos .live-demo-actions .btn-primary:disabled {
+  background: #94a3b8;
+}
+
 .card h2 {
   margin: 0 0 10px;
   font-size: 1.05rem;

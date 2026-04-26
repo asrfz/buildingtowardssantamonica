@@ -7,28 +7,21 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Maps event types to the object name Claude should find in the frame
-EVENT_OBJECT_MAP: dict[str, str] = {
-    "STOVE_LEFT_ON": "stove",
-    "IRON_LEFT_ON": "iron",
-    "FIRE_RISK": "stove",
-    "FAUCET_RUNNING": "sink",
-    "WATER_DRIPPING": "sink",
-    "FRIDGE_OPEN": "fridge",
-    "APPLIANCE_FAULT": "stove",
-    "FALL_DETECTED": "stove",
-}
 
-# Fallback zone name for MongoDB lookup (same as before)
+# Fallback zone name for MongoDB room_zones lookup
 EVENT_ZONE_MAP: dict[str, str] = {
-    "STOVE_LEFT_ON": "stove",
-    "IRON_LEFT_ON": "stove",
-    "FIRE_RISK": "stove",
-    "FAUCET_RUNNING": "sink",
-    "WATER_DRIPPING": "sink",
-    "FRIDGE_OPEN": "fridge",
-    "APPLIANCE_FAULT": "stove",
-    "FALL_DETECTED": "stove",
+    "STOVE_LEFT_ON":        "stove",
+    "IRON_LEFT_ON":         "stove",
+    "FIRE_RISK":            "stove",
+    "FAUCET_RUNNING":       "sink",
+    "WATER_DRIPPING":       "sink",
+    "FRIDGE_OPEN":          "fridge",
+    "APPLIANCE_FAULT":      "stove",
+    "FALL_DETECTED":        "stove",
+    "TEMPERATURE_ANOMALY":  "stove",
+    "SOUND_ANOMALY":        "sink",
+    "DOOR_SENSOR_ANOMALY":  "fridge",
+    "MULTIVARIATE_ANOMALY": "stove",
 }
 
 
@@ -48,40 +41,35 @@ async def capture_frame() -> np.ndarray | None:
 
 async def detect_zone_in_frame(frame: np.ndarray, event_type: str) -> dict | None:
     """
-    Use Claude vision to find the relevant object in a frame.
-    Returns a zone dict with fractional coords (pct=True) or None if not found.
-    Caches the result to MongoDB for faster future lookups.
+    Use Claude vision to find the most safety-relevant object in a frame.
+    Returns a zone dict with fractional coords (pct=True) or None if nothing found.
     """
     from app.services.cloudinary_service import frame_to_base64
     from app.services.claude_service import detect_objects_in_frame
 
-    target = EVENT_OBJECT_MAP.get(event_type)
-    if not target:
-        return None
-
     try:
         image_b64 = frame_to_base64(frame)
-        objects = await detect_objects_in_frame(image_b64)
+        objects = await detect_objects_in_frame(image_b64, event_type)
     except Exception as e:
         logger.warning(f"Claude vision detection failed: {e}")
         return None
 
-    # Find best match — exact name or prefix match (e.g. "fridge" matches "fridge door")
-    for obj in objects:
-        name = obj.get("name", "").lower()
-        if name == target or name.startswith(target) or target in name:
-            logger.info(f"Claude vision detected '{name}' for event {event_type}")
-            return {
-                "name": target,
-                "x": obj["x"],
-                "y": obj["y"],
-                "w": obj["w"],
-                "h": obj["h"],
-                "pct": True,  # signal to Cloudinary service to use fl_relative
-            }
+    if not objects:
+        logger.warning(f"Claude vision found nothing for event {event_type}")
+        return None
 
-    logger.warning(f"Claude vision could not find '{target}' for event {event_type}")
-    return None
+    # Claude orders by safety relevance — take the top result
+    obj = objects[0]
+    obj_name = obj.get("name", "object").lower()
+    logger.info(f"Claude vision detected '{obj_name}' for event {event_type}")
+    return {
+        "name": obj_name,
+        "x": obj["x"],
+        "y": obj["y"],
+        "w": obj["w"],
+        "h": obj["h"],
+        "pct": True,
+    }
 
 
 async def get_zone_for_event(user_id: str, event_type: str, db) -> dict | None:
@@ -135,3 +123,61 @@ async def get_zone_dynamic_or_fallback(
     if not z:
         return None
     return _pixel_zone_to_fractional(z, frame)
+
+
+async def detect_zone_in_frame_b64(image_b64: str, event_type: str) -> dict | None:
+    """
+    Browser-frame variant of detect_zone_in_frame — accepts base64 JPEG directly.
+    Claude identifies whatever safety-relevant object is actually present.
+    """
+    from app.services.claude_service import detect_objects_in_frame
+
+    try:
+        objects = await detect_objects_in_frame(image_b64, event_type)
+    except Exception as e:
+        logger.warning(f"Claude vision detection failed: {e}")
+        return None
+
+    if not objects:
+        logger.warning(f"Claude vision found nothing for event {event_type}")
+        return None
+
+    obj = objects[0]
+    obj_name = obj.get("name", "object").lower()
+    logger.info(f"Claude vision detected '{obj_name}' for event {event_type}")
+    return {
+        "name": obj_name,
+        "x": obj["x"],
+        "y": obj["y"],
+        "w": obj["w"],
+        "h": obj["h"],
+        "pct": True,
+    }
+
+
+async def get_zone_dynamic_or_fallback_b64(
+    image_b64: str,
+    user_id: str,
+    event_type: str,
+    db,
+) -> dict | None:
+    """
+    Browser-frame variant of get_zone_dynamic_or_fallback.
+    Falls back to a full-frame crop when MongoDB pixel zones can't be normalized
+    without image dimensions.
+    """
+    zone = await detect_zone_in_frame_b64(image_b64, event_type)
+    if zone:
+        return zone
+
+    logger.info(f"Falling back to MongoDB zone for {event_type} (b64 path)")
+    z = await get_zone_for_event(user_id, event_type, db)
+    if not z:
+        return None
+
+    if z.get("pct"):
+        z["name"] = z.get("name", "object")
+        return z
+
+    # Pixel zones need frame dimensions to normalize; use full-frame crop as safe fallback
+    return {"name": z.get("name", "object"), "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "pct": True}

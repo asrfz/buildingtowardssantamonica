@@ -11,7 +11,7 @@ Follow these steps **in order** the first time you run HomePulse locally. After 
 ### 1. Prerequisites
 
 - **Python 3.11+** (3.13 works; project uses async tests and modern typing)
-- **MongoDB** running and reachable (local install, Docker, or **MongoDB Atlas** URI)
+- **MongoDB** running and **reachable from your machine** (your PC, a teammate’s PC on the LAN, Docker, or **MongoDB Atlas**). Same `MONGODB_URI` for both FastAPI and `run_agents.py`.
 - **Git** (to clone the repo if you have not already)
 - Optional: **Node.js 20+** and npm — only if you use the `frontend/` dev console
 - Optional: **Arduino** on a COM port, **webcam**, **microphone** — only for hardware and voice-input paths; `POST /sensor/simulate` can drive the agent pipeline without serial
@@ -67,7 +67,7 @@ Fill Cloudinary / API base URL in `.env.local` as needed.
 
 ### 6. Start MongoDB
 
-Ensure the database in **`MONGODB_URI`** is up (local service started, or Atlas reachable).
+Ensure the database in **`MONGODB_URI`** is up and **your app can open a TCP connection** to it. If Mongo runs on someone else’s laptop, use that machine’s LAN IP (or a tunnel) in the URI, and make sure MongoDB is configured to accept remote connections (not only `127.0.0.1`) and that firewalls allow the port (often `27017`). **Atlas** avoids that wiring by using a cloud hostname instead.
 
 ### 7. Start the API (terminal 1)
 
@@ -94,17 +94,22 @@ This runs **all** agents in one process (sensor, triage, vision, monitor, notifi
 
 ### 9. Start the frontend (optional, terminal 3)
 
-```bash
-cd frontend
-npm run dev
+From the **repo root**:
+
+```powershell
+.\scripts\start_frontend.ps1
 ```
+
+(macOS / Linux: `chmod +x scripts/start_frontend.sh && ./scripts/start_frontend.sh`)
+
+Or: `cd frontend && npm install && npm run dev`
 
 Open the URL Vite prints (typically **http://localhost:5173**).
 
 ### 10. Quick verification
 
 - **Health / API:** open **http://localhost:8000/docs** and try a simple `GET` if you have one wired, or proceed to simulate.  
-- **Simulated sensor (full pipeline):** `POST /sensor/simulate` with a JSON body matching **`SensorPayload`** (see **Testing steps** later in this doc). Expect a short delay before **`sensor_agent`** picks up the injected reading.  
+- **Simulated sensor (full pipeline):** `POST /sensor/simulate` — readings go to Mongo **`sensor_simulation_queue`** so the bureau sees them across processes. Optional **`force_triage`** skips baseline scoring (frontend **“Loud noise (full pipeline)”** uses this). Wait up to one sensor interval (~5s).  
 - **Voice overlay:** open **http://localhost:8000/voice**, run the bureau with addresses configured, speak a wake phrase (see **Voice paths** below).  
 
 ### 11. ASI:One / Agentverse (production-style chat)
@@ -167,7 +172,7 @@ Other addresses route the sensor → triage → … → notification pipeline. A
 
 ## Full agent and sensor pipeline (event path)
 
-1. **Ingress** — Arduino JSON every ~5s via `serial_reader`, **or** `POST /sensor/simulate` → `inject_reading` (same queue).
+1. **Ingress** — Arduino JSON every ~5s via `serial_reader`, **or** `POST /sensor/simulate` → documents in MongoDB collection **`sensor_simulation_queue`** (FIFO), which **`sensor_agent`** drains on its interval. (A legacy in-memory `inject_reading` still runs in the API process but does not reach a separate `run_agents.py` process.)
 2. **`sensor_agent`** — Pulls readings, runs `anomaly_detector.score_reading()`.
 3. **If anomaly** — `IrregularityEvent` → **`triage_agent`** → `claude_service.triage_event()`.
 4. **If dismissed** — Logged; chain stops.
@@ -209,7 +214,7 @@ Triggered when **`vision_agent`** emits a **`VoiceAlert`** (fractional zone / �
 | Prefix | Purpose |
 |--------|---------|
 | `/sensor/reading` | HTTP anomaly check (needs `DEFAULT_USER_ID`) |
-| `/sensor/simulate` | Inject one reading into the **agent** queue (sensor_agent picks it on its interval) |
+| `/sensor/simulate` | Queue one reading in **`sensor_simulation_queue`** for **`sensor_agent`** (~5s). Body: flat **`SensorPayload`**, or `{ "payload": {...}, "force_triage": { "event_type", "severity", ... } }` to skip scoring (demo without baselines). Response status **`queued`**. |
 | `/sensor/capture` | Webcam frame → Cloudinary calibration image |
 | `/events`, `/users`, `/zones`, `/alerts` | CRUD / ops |
 | `/dashboard/chat` | Agentverse ASI:One webhook (JSON envelope parsing) |

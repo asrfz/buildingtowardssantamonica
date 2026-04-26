@@ -97,6 +97,35 @@ def _upload_and_crop_sync(frame: np.ndarray, event_id: str, zone: dict) -> dict:
     return {"raw_url": raw["secure_url"], "cropped_url": cropped_url}
 
 
+def _upload_and_crop_from_b64_sync(image_b64: str, event_id: str, zone: dict) -> dict:
+    """Upload a base64 JPEG from the browser (no OpenCV needed)."""
+    _configure()
+    image_bytes = base64.b64decode(image_b64)
+    raw = cloudinary.uploader.upload(
+        image_bytes,
+        public_id=f"homepulse/raw/{event_id}",
+        resource_type="image",
+        overwrite=True,
+    )
+    transformation = [
+        _build_crop_transform(zone),
+        {"effect": "sharpen:80"},
+        {"effect": "improve"},
+        {"quality": "auto"},
+    ]
+    cropped_url = cloudinary.utils.cloudinary_url(
+        f"homepulse/raw/{event_id}",
+        transformation=transformation,
+    )[0]
+    logger.info(f"Cloudinary upload complete for event {event_id} — zone={zone.get('name', '?')}")
+    return {"raw_url": raw["secure_url"], "cropped_url": cropped_url}
+
+
+async def upload_and_crop_from_b64(image_b64: str, event_id: str, zone: dict) -> dict:
+    """Async wrapper for the browser-frame upload path."""
+    return await asyncio.to_thread(_upload_and_crop_from_b64_sync, image_b64, event_id, zone)
+
+
 async def upload_and_crop(frame: np.ndarray, event_id: str, zone: dict) -> dict:
     """
     Upload a webcam frame to Cloudinary and return:

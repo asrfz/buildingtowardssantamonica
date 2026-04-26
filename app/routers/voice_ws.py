@@ -9,6 +9,7 @@ Endpoints:
 
 Message format pushed over WebSocket (JSON):
     {"type": "listening"}                          -- mic is live, waiting
+    {"type": "wake_ack",   "text": "..."}          -- wake phrase recognized (immediate)
     {"type": "transcript", "text": "..."}          -- user's spoken question
     {"type": "answer",     "text": "..."}          -- Claude's response
     {"type": "error",      "text": "..."}          -- something went wrong
@@ -226,6 +227,24 @@ _HTML = """<!DOCTYPE html>
       margin-bottom: 6px;
     }
 
+    .card.wake_ack {
+      background: #0c1929;
+      border: 1px solid #1d4ed8;
+      font-size: 0.95rem;
+      color: #93c5fd;
+    }
+
+    .card.wake_ack::before {
+      content: "Wake";
+      display: block;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #60a5fa;
+      margin-bottom: 6px;
+    }
+
     .card.error {
       background: #1a0f0f;
       border: 1px solid #3a2020;
@@ -380,6 +399,9 @@ _HTML = """<!DOCTYPE html>
         const msg = JSON.parse(event.data);
         if (msg.type === 'listening') {
           setStatus('Listening for wake word...', true);
+        } else if (msg.type === 'wake_ack') {
+          setStatus('Wake phrase recognized...', true);
+          addCard('wake_ack', msg.text || 'Wake phrase recognized.');
         } else if (msg.type === 'transcript') {
           setStatus('Processing...', false);
           addCard('transcript', msg.text);

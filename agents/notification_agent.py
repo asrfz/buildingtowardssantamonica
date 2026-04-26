@@ -37,8 +37,8 @@ async def notify(ctx: Context, sender: str, msg: EscalationOrder) -> None:
     user_name = user["name"] if user else "Resident"
 
     ctx.logger.info(
-        f"Writing alert email for {msg.event_type} ({msg.severity}) "
-        f"→ {len(msg.recipients)} recipient(s)"
+        f"[EMAIL]  drafting {msg.event_type} ({msg.severity})"
+        f"  → {len(msg.recipients)} recipient(s)"
     )
 
     try:
@@ -80,9 +80,10 @@ async def notify(ctx: Context, sender: str, msg: EscalationOrder) -> None:
         ctx.logger.error(f"Failed to update event {msg.event_id}: {e}")
 
     if success:
-        ctx.logger.info(f"Email sent for event {msg.event_id} to {msg.recipients}")
+        ctx.logger.info(f"[EMAIL]  sent to {msg.recipients}")
+        ctx.logger.info(f"[EMAIL]  subject: {subject}")
     else:
-        ctx.logger.error(f"Email failed for event {msg.event_id}")
+        ctx.logger.error(f"[EMAIL]  FAILED for event {msg.event_id}")
 
     # Auto-create incident report for MEDIUM+ severity events
     if msg.severity in ("MEDIUM", "HIGH", "CRITICAL"):
@@ -98,7 +99,7 @@ async def notify(ctx: Context, sender: str, msg: EscalationOrder) -> None:
                 db=db,
                 resolution="notified" if success else "notification_failed",
             )
-            ctx.logger.info(f"Incident report created: {report_id}")
+            ctx.logger.info(f"[EMAIL]  incident report created: {report_id}")
         except Exception as e:
             ctx.logger.warning(f"Incident report creation failed (non-blocking): {e}")
 

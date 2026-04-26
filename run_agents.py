@@ -32,11 +32,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(levelname)s:%(name)s:%(message)s",
+    format="%(asctime)s  %(levelname)-5s  %(message)s",
+    datefmt="%H:%M:%S",
 )
 # Suppress noisy third-party HTTP logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("uagents").setLevel(logging.WARNING)
+logging.getLogger("fetchai").setLevel(logging.WARNING)
 
 from app.config import settings
 

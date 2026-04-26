@@ -31,6 +31,7 @@ class IrregularityEvent(Model):
     severity: str
     deviation_score: float
     sensor_payload: dict
+    sensor_reason: str = ""     # human-readable anomaly detail from anomaly_detector
     timestamp_iso: str          # ISO 8601 string, e.g. "2025-04-25T14:32:00"
 
 

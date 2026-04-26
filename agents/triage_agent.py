@@ -1,4 +1,5 @@
 import logging
+import httpx
 from datetime import datetime
 from bson import ObjectId
 from uagents import Agent, Context
@@ -6,6 +7,7 @@ from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service
+from app.services.tts_service import speak_async
 from app.schemas.event_schema import build_event_doc
 from agents.agent_messages import (
     IrregularityEvent,
@@ -15,6 +17,59 @@ from agents.agent_messages import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PUSH_URL = "http://localhost:8000/voice/push"
+
+
+def _sensor_alert_text(event_type: str, payload: dict, sensor_reason: str) -> str:
+    """Build an immediate, plain-language TTS announcement from raw sensor data."""
+    temp  = payload.get("temperature_c", 0)
+    sound = payload.get("sound_level", 0)
+
+    if event_type == "TEMPERATURE_ANOMALY":
+        if temp > 30:
+            return f"Higher than normal temperature detected — currently {temp:.0f} degrees. Activating camera."
+        elif temp < 15:
+            return f"Lower than normal temperature detected — currently {temp:.0f} degrees. Activating camera."
+        else:
+            return f"Unusual temperature reading — {temp:.0f} degrees. Activating camera."
+
+    if event_type == "SOUND_ANOMALY":
+        if sound > 600:
+            return f"Loud noise detected — sound level {sound:.0f}. Activating camera."
+        elif sound < 200:
+            return f"Unusual low-level noise detected. Activating camera."
+        else:
+            return f"Unusual noise detected. Activating camera."
+
+    if event_type == "DOOR_SENSOR_ANOMALY":
+        return "Door or enclosure opened unexpectedly. Activating camera."
+
+    if event_type == "OBJECT_DROPPED":
+        return "Drop or impact detected. Activating camera."
+
+    if event_type == "LIGHT_STATE_CHANGED":
+        return "Unexpected light change detected. Activating camera."
+
+    if event_type == "FALL_DETECTED":
+        return "Possible fall detected. Activating camera immediately."
+
+    if event_type == "FIRE_RISK":
+        return "Fire risk detected by sensors. Activating camera."
+
+    if event_type == "MULTIVARIATE_ANOMALY":
+        return "Multiple sensor irregularities detected simultaneously. Activating camera."
+
+    return f"Sensor irregularity detected. Activating camera."
+
+
+async def _push_status(text: str) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(_PUSH_URL, json={"type": "transcript", "text": text})
+    except Exception:
+        pass
+
 
 triage_agent = Agent(
     name="homepulse_triage",
@@ -51,7 +106,8 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
         )
 
     ctx.logger.info(
-        f"Triaging {msg.event_type} (score={msg.deviation_score:.1f}x, fp_rate={fp_rate:.0%})"
+        f"[1/5] TRIAGE  {msg.event_type}"
+        f"  score={msg.deviation_score:.1f}x  fp_rate={fp_rate:.0%}"
     )
 
     try:
@@ -71,9 +127,9 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
     confidence: float = result.get("confidence", 0.0)
     reason: str = result.get("reason", "")
 
+    outcome = "CONFIRMED" if investigate else "DISMISSED"
     ctx.logger.info(
-        f"Triage result — investigate={investigate}, "
-        f"confidence={confidence:.2f}, reason={reason!r}"
+        f"[1/5] TRIAGE  {outcome}  confidence={confidence:.0%}  reason={reason!r}"
     )
 
     # Write event to MongoDB regardless of outcome
@@ -92,8 +148,16 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
     event_id = str(inserted.inserted_id)
 
     if not investigate:
-        ctx.logger.info(f"Event {event_id} dismissed by Claude: {reason}")
+        ctx.logger.info(f"[1/5] TRIAGE  event {event_id[:8]} dismissed — pipeline stopped")
         return
+
+    # Speak sensor-specific alert immediately — before camera analysis runs
+    alert_text = _sensor_alert_text(msg.event_type, msg.sensor_payload, msg.sensor_reason)
+    try:
+        await speak_async(alert_text, correction=False)
+        await _push_status(alert_text)
+    except Exception as e:
+        ctx.logger.debug(f"Early TTS/push failed (non-blocking): {e}")
 
     # Fire history_agent and vision_agent in parallel — both forward to monitor_agent
     if not HISTORY_AGENT_ADDRESS or not VISION_AGENT_ADDRESS:
@@ -117,7 +181,7 @@ async def triage(ctx: Context, sender: str, msg: IrregularityEvent) -> None:
     await ctx.send(VISION_AGENT_ADDRESS, triage_result)
 
     ctx.logger.info(
-        f"Event {event_id} confirmed — fired history_agent + vision_agent in parallel"
+        f"[2/5] PIPELINE  event {event_id[:8]} → history_agent + vision_agent in parallel"
     )
 
 

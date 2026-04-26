@@ -53,6 +53,35 @@ async def send_system_offline_alert(user: dict) -> bool:
     return _send([user["email"]], "[HomePulse] Sensor offline — please check device", body)
 
 
+def send_voice_guidance_escalation_sync(
+    to_addresses: list[str],
+    *,
+    event_id: str,
+    object_name: str,
+    repeated_phrase: str,
+    user_id: str,
+) -> bool:
+    """Alert emergency contact when voice guidance repeats the same instruction."""
+    if not to_addresses:
+        return False
+    body = (
+        "<h2 style='color:#c2410c'>HomePulse — voice guidance needs attention</h2>"
+        "<p>The voice assistant gave the <strong>same directional instruction at least three times</strong> "
+        "without the situation resolving. Please check in with the resident.</p>"
+        f"<ul style='font-size:16px;line-height:1.6'>"
+        f"<li><strong>Event ID:</strong> {event_id}</li>"
+        f"<li><strong>User ID:</strong> {user_id}</li>"
+        f"<li><strong>Object:</strong> {object_name}</li>"
+        f"<li><strong>Repeated phrase:</strong> {repeated_phrase}</li>"
+        "</ul>"
+    )
+    return _send(
+        to_addresses,
+        "[HomePulse] Voice guidance stuck — please check in",
+        body,
+    )
+
+
 async def send_test_email(to_address: str) -> bool:
     body = (
         "<h2 style='color:#38a169'>✅ HomePulse Gmail Connection Verified</h2>"

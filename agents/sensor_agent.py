@@ -11,6 +11,9 @@ from agents.agent_messages import IrregularityEvent, TRIAGE_AGENT_ADDRESS
 
 logger = logging.getLogger(__name__)
 
+# Same collection name as app.routers.sensor.SIMULATION_QUEUE_COLL
+_SIM_COLL = "sensor_simulation_queue"
+
 sensor_agent = Agent(
     name="homepulse_sensor",
     seed=settings.FETCHAI_AGENT_SEED + "_sensor",
@@ -38,15 +41,29 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
     await ctx.send(sender, ChatMessage(content="HomePulse sensor_agent online"))
 
 
+async def _pop_simulation_doc(db):
+    """FIFO doc from FastAPI /sensor/simulate — works across processes."""
+    return await db[_SIM_COLL].find_one_and_delete({}, sort=[("created_at", 1)])
+
+
 @sensor_agent.on_interval(period=5.0)
 async def read_and_score(ctx: Context) -> None:
-    raw = get_latest_reading()
-    if not raw:
-        return
-
     user_id = settings.DEFAULT_USER_ID
     if not user_id:
         ctx.logger.warning("DEFAULT_USER_ID not set — run scripts/seed_demo.py first")
+        return
+
+    db = get_db()
+
+    sim_doc = await _pop_simulation_doc(db)
+    if sim_doc:
+        raw = sim_doc["payload"]
+        force_triage = sim_doc.get("force_triage")
+    else:
+        raw = get_latest_reading()
+        force_triage = None
+
+    if not raw:
         return
 
     try:
@@ -55,8 +72,6 @@ async def read_and_score(ctx: Context) -> None:
         ctx.logger.warning(f"Invalid serial payload: {e}")
         return
 
-    db = get_db()
-
     # Update heartbeat so heartbeat_agent knows we are alive
     await db.agent_heartbeats.update_one(
         {"agent": "sensor_agent"},
@@ -64,18 +79,44 @@ async def read_and_score(ctx: Context) -> None:
         upsert=True,
     )
 
+    if not TRIAGE_AGENT_ADDRESS:
+        ctx.logger.warning("TRIAGE_AGENT_ADDRESS not set — run scripts/register_agents.py")
+        return
+
+    if isinstance(force_triage, dict) and force_triage.get("event_type"):
+        et = str(force_triage["event_type"])
+        sev = str(force_triage.get("severity", "HIGH"))
+        score = float(force_triage.get("deviation_score", 5.0))
+        reason = str(force_triage.get("reason", "forced_simulation"))
+        _SEP = "─" * 56
+        ctx.logger.info(_SEP)
+        ctx.logger.info(f"FORCED SIMULATION → triage  {et}  severity={sev}  score={score}")
+        ctx.logger.info(_SEP)
+        await ctx.send(
+            TRIAGE_AGENT_ADDRESS,
+            IrregularityEvent(
+                user_id=user_id,
+                event_type=et,
+                severity=sev,
+                deviation_score=score,
+                sensor_payload=payload.model_dump(mode="json"),
+                sensor_reason=reason,
+                timestamp_iso=datetime.utcnow().isoformat(),
+            ),
+        )
+        return
+
     result = await score_reading(user_id, payload, db)
     if not result.triggered:
         return
 
+    _SEP = "─" * 56
+    ctx.logger.info(_SEP)
     ctx.logger.info(
-        f"Anomaly detected: {result.event_type} — {result.deviation_score:.1f}x "
-        f"({result.severity}) via {result.sensor}"
+        f"ANOMALY DETECTED  {result.event_type}"
+        f"  score={result.deviation_score:.1f}x  severity={result.severity}  sensor={result.sensor}"
     )
-
-    if not TRIAGE_AGENT_ADDRESS:
-        ctx.logger.warning("TRIAGE_AGENT_ADDRESS not set — run scripts/register_agents.py")
-        return
+    ctx.logger.info(_SEP)
 
     await ctx.send(
         TRIAGE_AGENT_ADDRESS,
@@ -85,6 +126,7 @@ async def read_and_score(ctx: Context) -> None:
             severity=result.severity,
             deviation_score=result.deviation_score,
             sensor_payload=payload.model_dump(mode="json"),
+            sensor_reason=result.reason,
             timestamp_iso=datetime.utcnow().isoformat(),
         ),
     )

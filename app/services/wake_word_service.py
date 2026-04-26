@@ -18,9 +18,14 @@ Design notes:
       hotword model is needed. Scribe processes the full utterance first.
 """
 
+import json
 import logging
 import queue
+import re
 import threading
+import urllib.error
+import urllib.request
+
 import numpy as np
 
 from app.services.stt_service import transcribe_sync, numpy_to_wav_bytes
@@ -38,14 +43,50 @@ SILENCE_CHUNKS       = 12     # 12 x 100ms = 1.2 s of quiet -> end of utterance
 MIN_SPEECH_CHUNKS    = 4      # at least 400ms of speech before processing
 MAX_SPEECH_CHUNKS    = 80     # cap at 8 s to prevent runaway recordings
 
-# ── Wake words (checked against lowercased transcript) ───────────────────────
+# ── Wake words (checked against normalized transcript; order longest-first in logic) ──
 WAKE_WORDS = [
     "hey homepulse",
     "hey home pulse",
+    "hey, home pulse",
+    "hey, homepulse",
+    "hi home pulse",
+    "hi homepulse",
+    "ok homepulse",
+    "ok home pulse",
     "hey pulse",
     "hey program",
     "homepulse",
 ]
+
+_VOICE_PUSH_URL = "http://127.0.0.1:8000/voice/push"
+
+
+def _normalize_for_wake(s: str) -> str:
+    """Lowercase, drop commas/semicolons, collapse whitespace — matches STT variants."""
+    x = s.lower().strip()
+    x = re.sub(r"[,;]", " ", x)
+    x = re.sub(r"\s+", " ", x).strip()
+    return x
+
+
+def _push_wake_ack() -> None:
+    """Immediate UI feedback so the wake phrase feels responsive (sync, best-effort)."""
+    try:
+        payload = json.dumps(
+            {
+                "type": "wake_ack",
+                "text": "Wake phrase heard — sending your request to HomePulse.",
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            _VOICE_PUSH_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2.0)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        pass
 
 # ── Shared query queue (voice_input_agent drains this) ───────────────────────
 detected_query_queue: queue.Queue[str] = queue.Queue()
@@ -121,10 +162,11 @@ def _listen_loop() -> None:
                     transcript = transcribe_sync(wav_bytes)
                     query = _extract_query(transcript)
                     if query:
-                        logger.info(f"[WakeWord] Query detected: {query!r}")
+                        logger.info(f"[WakeWord] Query detected: {query!r} (raw STT: {transcript!r})")
+                        _push_wake_ack()
                         detected_query_queue.put(query)
                     elif transcript:
-                        logger.debug(f"[WakeWord] No wake word in: {transcript!r}")
+                        logger.info(f"[WakeWord] No wake word in transcript: {transcript!r}")
 
                 speech_chunks = []
                 silence_count = 0

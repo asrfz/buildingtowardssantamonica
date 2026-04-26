@@ -28,14 +28,11 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
     await ctx.send(sender, ChatMessage(content="HomePulse report_agent online"))
 
 
-@report_agent.on_interval(period=float(_7D))
-async def send_weekly_report(ctx: Context) -> None:
-    user_id = settings.DEFAULT_USER_ID
-    if not user_id:
-        ctx.logger.warning("DEFAULT_USER_ID not set — skipping weekly report")
-        return
-
-    db = get_db()
+async def generate_and_send_weekly_report(user_id: str, db) -> bool:
+    """
+    Generate and send a weekly digest on demand.
+    Called only when explicitly requested (e.g. via dashboard chat or voice command).
+    """
     cutoff = datetime.utcnow() - timedelta(days=7)
 
     events = await db.events.find({
@@ -45,13 +42,12 @@ async def send_weekly_report(ctx: Context) -> None:
 
     user = await db.users.find_one({"_id": ObjectId(user_id)})
     if not user:
-        ctx.logger.error(f"User {user_id} not found — skipping report")
-        return
+        logger.error(f"User {user_id} not found — cannot send report")
+        return False
 
     user_name = user["name"]
-    ctx.logger.info(f"Generating weekly digest for {user_name} — {len(events)} events this week")
+    logger.info(f"Generating weekly digest for {user_name} — {len(events)} events")
 
-    # Serialize events for Claude (remove ObjectIds)
     serialized = [
         {
             "event_type": e.get("event_type", ""),
@@ -69,18 +65,14 @@ async def send_weekly_report(ctx: Context) -> None:
             user_name=user_name,
         )
     except Exception as e:
-        ctx.logger.error(f"Claude digest failed: {e}")
-        return
+        logger.error(f"Claude digest failed: {e}")
+        return False
 
-    recipients = [user["email"]] + [
-        c["email"] for c in user.get("emergency_contacts", [])
-    ]
-
+    recipients = [user["email"]] + [c["email"] for c in user.get("emergency_contacts", [])]
     success = await gmail_service.send_weekly_digest(recipients, digest_html)
     if success:
-        ctx.logger.info(f"Weekly digest sent to {recipients}")
-    else:
-        ctx.logger.error("Weekly digest email failed")
+        logger.info(f"Weekly digest sent to {recipients}")
+    return success
 
 
 if __name__ == "__main__":
