@@ -1,5 +1,6 @@
 from datetime import datetime
 from bson import ObjectId
+from app.utils.event_labels import label_for_event_type
 
 
 def build_event_doc(
@@ -12,7 +13,9 @@ def build_event_doc(
 ) -> dict:
     return {
         "user_id": ObjectId(user_id),
+        "user_id_str": user_id,
         "event_type": event_type,
+        "event_label": label_for_event_type(event_type),
         "severity": severity,
         "deviation_score": deviation_score,
         "sensor_payload": sensor_payload,

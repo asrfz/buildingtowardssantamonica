@@ -17,3 +17,4 @@ class SensorPayload(BaseModel):
     gyro_triggered: int = Field(default=0, ge=0, le=1)
     sound_triggered: int = Field(default=0, ge=0, le=1)
     magnetic_triggered: int = Field(default=0, ge=0, le=1)
+    light_level: int = Field(default=512, ge=0, le=1023)  # raw ambient light reading

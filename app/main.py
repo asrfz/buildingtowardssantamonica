@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import connect_db, close_db
-from app.routers import sensor, events, users, zones, alerts, integration, dashboard, voice_ws
+from app.routers import sensor, events, users, zones, alerts, integration, dashboard, voice_ws, search, incidents
 
 logging.basicConfig(level=logging.INFO)
 
@@ -45,3 +45,5 @@ app.include_router(alerts.router,  prefix="/alerts",  tags=["alerts"])
 app.include_router(integration.router, prefix="/integration", tags=["integration"])
 app.include_router(dashboard.router,   prefix="/dashboard",   tags=["dashboard"])
 app.include_router(voice_ws.router,    prefix="/voice",       tags=["voice"])
+app.include_router(search.router,      prefix="/search",      tags=["search"])
+app.include_router(incidents.router,   prefix="/incidents",   tags=["incidents"])

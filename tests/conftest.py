@@ -133,6 +133,7 @@ def mock_db():
     db.sensor_baselines = _make_collection(find_one_result=baseline_doc)
     db.behavioral_schema = _make_collection(find_one_result=BEHAVIORAL_SCHEMA_DOC)
     db.events = _make_collection(find_one_result=None, find_results=[])
+    db.sensor_readings = _make_collection()
     db.agent_heartbeats = _make_collection()
     db.room_zones = _make_collection(find_one_result={
         "user_id": ObjectId(DEMO_USER_ID),
@@ -154,5 +155,6 @@ def mock_db_no_baseline():
     db.users = _make_collection(find_one_result=DEMO_USER_DOC)
     db.behavioral_schema = _make_collection(find_one_result=BEHAVIORAL_SCHEMA_DOC)
     db.events = _make_collection()
+    db.sensor_readings = _make_collection()
     db.agent_heartbeats = _make_collection()
     return db

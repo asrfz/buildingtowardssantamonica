@@ -6,6 +6,7 @@ from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service
+from app.utils.event_labels import label_for_event_type
 from agents.agent_messages import (
     UserHistoryContext,
     VisionResult,
@@ -94,6 +95,7 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
             {
                 "$set": {
                     "event_type": confirmed_type,
+                    "event_label": label_for_event_type(confirmed_type),
                     "severity": severity,
                     "recommended_action": recommended_action,
                     "suggested_service": suggested_service,

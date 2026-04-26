@@ -6,6 +6,7 @@ from uagents_core.contrib.protocols.chat import ChatMessage
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service, gmail_service
+from app.services.incident_service import create_incident_report
 from agents.agent_messages import EscalationOrder
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,24 @@ async def notify(ctx: Context, sender: str, msg: EscalationOrder) -> None:
         ctx.logger.info(f"Email sent for event {msg.event_id} to {msg.recipients}")
     else:
         ctx.logger.error(f"Email failed for event {msg.event_id}")
+
+    # Auto-create incident report for MEDIUM+ severity events
+    if msg.severity in ("MEDIUM", "HIGH", "CRITICAL"):
+        try:
+            report_id = await create_incident_report(
+                event_id=msg.event_id,
+                user_id=msg.user_id,
+                event_type=msg.event_type,
+                severity=msg.severity,
+                sensor_payload=msg.sensor_payload,
+                recommended_action=msg.recommended_action,
+                image_urls={"raw": msg.image_url, "cropped": msg.image_url},
+                db=db,
+                resolution="notified" if success else "notification_failed",
+            )
+            ctx.logger.info(f"Incident report created: {report_id}")
+        except Exception as e:
+            ctx.logger.warning(f"Incident report creation failed (non-blocking): {e}")
 
 
 if __name__ == "__main__":
