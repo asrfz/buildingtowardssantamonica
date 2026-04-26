@@ -6,13 +6,18 @@
 short sampleBuffer[256];
 volatile int samplesRead = 0;
 
-unsigned long lastOutput = 0;
-const unsigned long OUTPUT_INTERVAL_MS = 1000;
-
-float peakAccel = 0;
-float peakGyro = 0;
-float peakMagnetic = 0;
 float soundLevel = 0;
+
+// thresholds
+const int LIGHT_CHANGE_THRESHOLD = 180;   // detect big on/off jump
+const float ACCEL_THRESHOLD = 1.2;        // was 1.8
+const float GYRO_THRESHOLD = 120.0;       // was 220
+const float SOUND_THRESHOLD = 300.0;      // was 1000+
+const float MAGNETIC_THRESHOLD = 60.0;    // was 120
+
+unsigned long lastEventTime = 0;
+const unsigned long COOLDOWN_MS = 1500;
+int prevLightValue = -1;
 
 void onPDMdata() {
   int bytesAvailable = PDM.available();
@@ -29,82 +34,100 @@ void setup() {
   Serial.begin(9600);
   delay(1500);
 
-  if (!IMU.begin()) {
-    Serial.println("{\"error\":\"IMU failed\"}");
-  }
+  IMU.begin();
 
   PDM.onReceive(onPDMdata);
-
-  if (!PDM.begin(1, 16000)) {
-    Serial.println("{\"error\":\"PDM mic failed\"}");
-  }
+  PDM.begin(1, 16000);
 
   Serial.println("{\"status\":\"ready\"}");
 }
 
 void loop() {
-  // ----- accelerometer -----
+  int lightValue = analogRead(LIGHT_PIN);
+
+  float accelMag = 0;
+  float gyroMag = 0;
+  float magneticMag = 0;
+
   float ax, ay, az;
   if (IMU.accelerationAvailable()) {
     IMU.readAcceleration(ax, ay, az);
-    float accelMag = sqrt(ax * ax + ay * ay + az * az);
-    if (accelMag > peakAccel) peakAccel = accelMag;
+    accelMag = sqrt(ax * ax + ay * ay + az * az);
   }
 
-  // ----- gyroscope -----
   float gx, gy, gz;
   if (IMU.gyroscopeAvailable()) {
     IMU.readGyroscope(gx, gy, gz);
-    float gyroMag = sqrt(gx * gx + gy * gy + gz * gz);
-    if (gyroMag > peakGyro) peakGyro = gyroMag;
+    gyroMag = sqrt(gx * gx + gy * gy + gz * gz);
   }
 
-  // ----- magnetometer -----
   float mx, my, mz;
   if (IMU.magneticFieldAvailable()) {
     IMU.readMagneticField(mx, my, mz);
-    float magneticMag = sqrt(mx * mx + my * my + mz * mz);
-    if (magneticMag > peakMagnetic) peakMagnetic = magneticMag;
+    magneticMag = sqrt(mx * mx + my * my + mz * mz);
   }
 
-  // ----- microphone -----
   if (samplesRead > 0) {
     long sum = 0;
-
     for (int i = 0; i < samplesRead; i++) {
       sum += abs(sampleBuffer[i]);
     }
-
     soundLevel = (float)sum / samplesRead;
     samplesRead = 0;
   }
 
-  // ----- light sensor -----
-  int lightValue = analogRead(LIGHT_PIN);
+  bool lightTriggered = false;
+  if (prevLightValue >= 0) {
+    lightTriggered = abs(lightValue - prevLightValue) >= LIGHT_CHANGE_THRESHOLD;
+  }
+  prevLightValue = lightValue;
+  bool motionTriggered = accelMag > ACCEL_THRESHOLD;
+  bool gyroTriggered = gyroMag > GYRO_THRESHOLD;
+  bool soundTriggered = soundLevel > SOUND_THRESHOLD;
+  bool magneticTriggered = magneticMag > MAGNETIC_THRESHOLD;
 
-  // ----- print once per second -----
-  if (millis() - lastOutput >= OUTPUT_INTERVAL_MS) {
-    lastOutput = millis();
+  bool anyTriggered =
+    lightTriggered ||
+    motionTriggered ||
+    gyroTriggered ||
+    soundTriggered ||
+    magneticTriggered;
 
-    Serial.print("{\"light\":");
+  if (anyTriggered && millis() - lastEventTime > COOLDOWN_MS) {
+    lastEventTime = millis();
+
+    Serial.print("{\"event\":1");
+
+    Serial.print(",\"light_triggered\":");
+    Serial.print(lightTriggered ? 1 : 0);
+
+    Serial.print(",\"motion_triggered\":");
+    Serial.print(motionTriggered ? 1 : 0);
+
+    Serial.print(",\"gyro_triggered\":");
+    Serial.print(gyroTriggered ? 1 : 0);
+
+    Serial.print(",\"sound_triggered\":");
+    Serial.print(soundTriggered ? 1 : 0);
+
+    Serial.print(",\"magnetic_triggered\":");
+    Serial.print(magneticTriggered ? 1 : 0);
+
+    Serial.print(",\"light\":");
     Serial.print(lightValue);
 
-    Serial.print(",\"sound_level\":");
+    Serial.print(",\"accel\":");
+    Serial.print(accelMag, 3);
+
+    Serial.print(",\"gyro\":");
+    Serial.print(gyroMag, 3);
+
+    Serial.print(",\"sound\":");
     Serial.print(soundLevel, 2);
 
-    Serial.print(",\"peak_accel\":");
-    Serial.print(peakAccel, 3);
-
-    Serial.print(",\"peak_gyro\":");
-    Serial.print(peakGyro, 3);
-
-    Serial.print(",\"peak_magnetic\":");
-    Serial.print(peakMagnetic, 3);
+    Serial.print(",\"magnetic\":");
+    Serial.print(magneticMag, 3);
 
     Serial.println("}");
-
-    peakAccel = 0;
-    peakGyro = 0;
-    peakMagnetic = 0;
   }
 }
