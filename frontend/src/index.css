@@ -691,9 +691,19 @@ button.prompt-chip {
   line-height: 1.35;
 }
 
-.hp-status-float--mock {
+.hp-status-float--alert {
   border: 1px solid #ef4444;
   box-shadow: 0 0 0 1px rgb(0 0 0 / 35%);
+}
+
+.hp-status-float--idle {
+  border: 1px solid rgb(148 163 184 / 35%);
+}
+
+.hp-status-float--idle .hp-status-dot {
+  background: #64748b;
+  box-shadow: none;
+  animation: none;
 }
 
 .hp-status-line {

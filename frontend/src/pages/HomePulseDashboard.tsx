@@ -488,11 +488,15 @@ export default function HomePulseDashboard() {
   }, [userId])
 
   const conf = confFromDeviation(selected?.deviation_score)
-  const riskLabel = selected?.severity ? selected.severity.toUpperCase() : '—'
+  const riskLabel = selected?.severity ? selected.severity.toUpperCase() : ''
   const hasLiveCrop = Boolean(rawUrl && zone)
-  const demoLayout = !hasLiveCrop
-  const displayConf = conf ?? (demoLayout ? '94.7%' : null)
-  const displayRisk = riskLabel !== '—' ? riskLabel : demoLayout ? 'HIGH' : '—'
+  const statusHeadline = (() => {
+    if (selected) return hazardPillLabel(selected)
+    if (loading) return 'Loading alerts…'
+    if (events.length > 0) return 'Select an alert'
+    return 'No alerts yet'
+  })()
+  const statusIsAlert = Boolean(selected)
 
   const notifyTitle = selected
     ? `${(selected.event_label || selected.event_type.replace(/_/g, ' ')).replace(/^\w/, (c) => c.toUpperCase())} detected nearby`
@@ -514,7 +518,7 @@ export default function HomePulseDashboard() {
     return lines.length > 1 ? lines.slice(1, 4) : DEFAULT_VOICE_STEPS
   })()
 
-  const demoHazardText = selected ? hazardPillLabel(selected) : 'POWER CORD - TRIP HAZARD'
+  const placeholderHazardLabel = 'No active alert — example frame'
   const feedClock = selected?.detected_at
     ? formatFeedClock(selected.detected_at)
     : formatFeedClock(new Date(nowTick).toISOString())
@@ -692,13 +696,16 @@ export default function HomePulseDashboard() {
         ) : null}
 
         <div className={`hp-feed-stage ${sensorPulse ? 'hp-feed-stage--pulse' : ''}`}>
-          <div className="hp-status-float hp-status-float--mock" aria-live="polite">
+          <div
+            className={`hp-status-float ${statusIsAlert ? 'hp-status-float--alert' : 'hp-status-float--idle'}`}
+            aria-live="polite"
+          >
             <div className="hp-status-line">
               <span className="hp-status-dot" />
-              <strong>HAZARD DETECTED</strong>
+              <strong>{statusHeadline}</strong>
             </div>
-            {displayConf ? <div className="hp-status-metric">CONF: {displayConf}</div> : null}
-            <div className="hp-status-metric">RISK: {displayRisk}</div>
+            {conf ? <div className="hp-status-metric">CONF: {conf}</div> : null}
+            {riskLabel ? <div className="hp-status-metric">RISK: {riskLabel}</div> : null}
           </div>
 
           {hasLiveCrop ? (
@@ -722,7 +729,7 @@ export default function HomePulseDashboard() {
               zone={zone}
               zoom={zoom}
               shortLabel={selected?.event_label || selected?.event_type || 'Alert'}
-              hazardLabel={selected ? hazardPillLabel(selected) : demoHazardText}
+              hazardLabel={selected ? hazardPillLabel(selected) : placeholderHazardLabel}
             />
           ) : selected && rawUrl ? (
             <>
@@ -730,7 +737,7 @@ export default function HomePulseDashboard() {
               <img src={rawUrl} alt="" className="hp-fallback-img" />
             </>
           ) : (
-            <DemoHazardFeed hazardLabel={demoHazardText} />
+            <DemoHazardFeed hazardLabel={placeholderHazardLabel} />
           )}
 
           <div className="hp-feed-clock">{feedClock}</div>
