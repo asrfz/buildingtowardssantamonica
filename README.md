@@ -59,12 +59,33 @@ Defined in **`app/config.py`**. Typical root `.env` keys:
 - **App:** `DEFAULT_USER_ID` (24-char hex ObjectId for the primary demo user), `APP_ENV` (`development` enables e.g. `GET /integration/dev-context`)
 - **Claude:** `ANTHROPIC_API_KEY`
 - **Fetch.ai:** `FETCHAI_AGENT_SEED`, `AGENTVERSE_KEY` (dashboard mailbox)
-- **Cloudinary:** `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`
+- **Cloudinary:** `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`; optional `CLOUDINARY_ALERT_THUMB_MAX_WIDTH`, `CLOUDINARY_NAMED_TRANSFORM_POSTCROP`, `CLOUDINARY_DESTROY_ON_FALSE_POSITIVE` (see **Cloudinary** below)
 - **Gmail:** `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`
 - **ElevenLabs:** `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`
 - **Hardware:** `ARDUINO_SERIAL_PORT`, `ARDUINO_BAUD_RATE`, `WEBCAM_INDEX`
 
 Frontend secrets use **`frontend/.env.local`** with the `VITE_` prefix only (see `frontend/.env.local.example`). Browsers do **not** load the root `.env`.
+
+---
+
+## Cloudinary
+
+Each alert frame uploads **once** to `homepulse/raw/{event_id}`. The app builds **two HTTPS delivery URLs** from that `public_id` (full zone crop and a width-capped thumb)—no second stored object. Spelled out with anchors and ops notes in **`pitch/cloudinary.md`** (`#cloudinary-feature-index`).
+
+**Features this repo uses**
+
+| Area | What |
+|------|------|
+| Upload | In-memory JPEG, `public_id`, `resource_type=image`, `overwrite` where applicable |
+| Tags | Comma-separated tags on every upload (e.g. `homepulse`, `alert`, `evt_*`, optional `uid_*`, `type_*`; previews/calibration use their own tag sets) |
+| Layout | Namespaced `public_id` paths: raw alerts, `homepulse/snapshots/preview/…`, `homepulse/reference/calibration` |
+| URLs | `secure_url` for the raw asset; `cloudinary.utils.cloudinary_url` for `cropped_image_url` and `cropped_thumb_url` |
+| Crop | `c_crop` with **`fl_relative`** when vision returns 0–1 box; absolute pixels for calibrated zones |
+| Full crop chain | Optional **named** post-crop transform (`CLOUDINARY_NAMED_TRANSFORM_POSTCROP`) **or** `e_sharpen:80` → `e_improve` → **`q_auto`** → **`f_auto`** → **`dpr_auto`** |
+| Thumb chain | Same crop → sharpen → **`c_limit`** (max width from `CLOUDINARY_ALERT_THUMB_MAX_WIDTH`, default 480) → improve → q_auto → f_auto → dpr_auto |
+| Lifecycle | `uploader.destroy` + **`invalidate=True`** on `homepulse/raw/{event_id}` when the user marks a false positive, if `CLOUDINARY_DESTROY_ON_FALSE_POSITIVE` is true |
+
+**Code:** `app/services/cloudinary_service.py`.
 
 ---
 
