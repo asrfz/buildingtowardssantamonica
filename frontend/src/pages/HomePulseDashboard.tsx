@@ -205,7 +205,6 @@ export default function HomePulseDashboard() {
   const [telemetry, setTelemetry] = useState<LiveTelemetry | null>(null)
   const [snapshots, setSnapshots] = useState<SnapshotRow[]>([])
   const [bureauTick, setBureauTick] = useState(() => Date.now())
-  const [bureauErr, setBureauErr] = useState('')
   const [simulateBusy, setSimulateBusy] = useState(false)
   const [sensorPulse, setSensorPulse] = useState(false)
 
@@ -627,15 +626,10 @@ export default function HomePulseDashboard() {
 
         <div className="hp-bureau-card">
           <div className="hp-bureau-head">Bureau camera</div>
-          {bureauErr ? <p className="hp-bureau-err">{bureauErr}</p> : null}
           <img
             src={`${apiBase()}/sensor/preview-jpeg?t=${bureauTick}`}
             alt=""
             className="hp-bureau-img"
-            onLoad={() => setBureauErr('')}
-            onError={() =>
-              setBureauErr('No webcam preview — start uvicorn on :8000 with a camera, or ignore for Arduino-only.')
-            }
           />
           <button type="button" className="hp-btn hp-btn-outline hp-btn-compact" onClick={() => setBureauTick(Date.now())}>
             Refresh frame
