@@ -14,7 +14,7 @@ from app.services.camera_snapshot_service import record_camera_snapshot
 from app.services.snapshot_cloudinary_gate import refund_upload_slot, try_consume_upload_slot
 from app.services.vision_service import capture_frame
 from app.services.cloudinary_service import upload_and_crop, frame_to_base64
-from app.utils.serial_reader import inject_reading
+from app.utils.serial_reader import inject_reading, get_last_ingested_reading, serial_reader_gave_up
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,8 @@ router = APIRouter()
 # Cross-process queue: FastAPI and sensor_agent (run_agents.py) are different
 # processes — in-memory inject_reading() alone never reaches the bureau.
 SIMULATION_QUEUE_COLL = "sensor_simulation_queue"
+# Latest normalized reading processed by sensor_agent (Arduino serial or dequeued simulate).
+SENSOR_LIVE_SHADOW_COLL = "sensor_live_shadow"
 
 
 def _parse_simulate_json(body: dict[str, Any]) -> tuple[SensorPayload, dict[str, Any] | None]:
@@ -310,6 +312,63 @@ async def capture_reference_frame() -> dict:
         "width": result["width"],
         "height": result["height"],
     }
+
+
+@router.get("/live-telemetry/{user_id}")
+async def live_telemetry(user_id: str) -> dict:
+    """
+    Live sensor snapshot for the dashboard: last reading processed by sensor_agent (Mongo),
+    plus optional same-process inject from POST /sensor/simulate (before the agent dequeues).
+
+    sensor_agent always writes sensor_live_shadow under settings.DEFAULT_USER_ID. If the UI
+    "home ID" differs, you will see no from_agent payload unless they match — in development
+    we fall back to DEFAULT_USER_ID's shadow so Arduino/simulate still shows up.
+    """
+    uid = user_id.strip()
+    db = get_db()
+    shadow = None
+    shadow_source_user_id: str | None = None
+    if uid:
+        shadow = await db[SENSOR_LIVE_SHADOW_COLL].find_one({"user_id_str": uid})
+        if shadow:
+            shadow_source_user_id = uid
+    default_uid = (settings.DEFAULT_USER_ID or "").strip()
+    if (
+        shadow is None
+        and default_uid
+        and default_uid != uid
+        and settings.APP_ENV == "development"
+    ):
+        shadow = await db[SENSOR_LIVE_SHADOW_COLL].find_one({"user_id_str": default_uid})
+        if shadow:
+            shadow_source_user_id = default_uid
+    from_agent = None
+    if shadow and shadow.get("payload") is not None:
+        ts = shadow.get("updated_at")
+        from_agent = {
+            "payload": shadow["payload"],
+            "updated_at": ts.isoformat() if hasattr(ts, "isoformat") else str(ts or ""),
+        }
+    inject_snap = get_last_ingested_reading()
+    from_api_inject = None
+    if inject_snap and isinstance(inject_snap.get("payload"), dict):
+        from_api_inject = inject_snap
+    # serial_reader runs in sensor_agent, not in uvicorn — prefer flag persisted in sensor_live_shadow.
+    shadow_gave_up = bool(shadow.get("serial_gave_up")) if shadow else False
+    out: dict[str, Any] = {
+        "arduino_serial_enabled": settings.ARDUINO_SERIAL_ENABLED,
+        "arduino_serial_port": settings.ARDUINO_SERIAL_PORT,
+        "serial_gave_up": shadow_gave_up or serial_reader_gave_up(),
+        "from_agent": from_agent,
+        "from_api_inject": from_api_inject,
+    }
+    if shadow_source_user_id and uid and shadow_source_user_id != uid:
+        out["shadow_source_user_id"] = shadow_source_user_id
+        out["shadow_source_note"] = (
+            "Live readings are stored under DEFAULT_USER_ID in .env; paste that same ID into "
+            '"Your home ID" (or set VITE_DEFAULT_USER_ID) to match production behavior.'
+        )
+    return out
 
 
 @router.get("/baseline/{user_id}")

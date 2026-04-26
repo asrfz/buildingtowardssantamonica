@@ -9,6 +9,9 @@ from app.config import settings
 _reading_queue: queue.Queue = queue.Queue(maxsize=10)
 _started = False
 _serial_stopped_access: bool = False  # True if we gave up on COM (port busy); no retries
+# Latest normalized payload (serial or POST /sensor/simulate inject) for caregiver UI.
+_last_ingested_payload: dict | None = None
+_last_ingested_monotonic: float = 0.0
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +104,23 @@ def get_latest_reading() -> dict | None:
         return None
 
 
+def _touch_last_ingested(payload: dict) -> None:
+    global _last_ingested_payload, _last_ingested_monotonic
+    _last_ingested_payload = dict(payload)
+    _last_ingested_monotonic = time.monotonic()
+
+
+def get_last_ingested_reading() -> dict | None:
+    """Most recent normalized SensorPayload-shaped dict (any source)."""
+    if _last_ingested_payload is None:
+        return None
+    return {"payload": _last_ingested_payload, "monotonic_ts": _last_ingested_monotonic}
+
+
 def inject_reading(payload: dict) -> None:
     """Push a reading directly into the queue (for demo/simulation without Arduino)."""
     payload = _normalize_payload(payload)
+    _touch_last_ingested(payload)
     if _reading_queue.full():
         try:
             _reading_queue.get_nowait()
@@ -139,6 +156,7 @@ def _serial_loop() -> None:
                         continue
                     try:
                         payload = _normalize_payload(json.loads(line))
+                        _touch_last_ingested(payload)
                         if _reading_queue.full():
                             try:
                                 _reading_queue.get_nowait()

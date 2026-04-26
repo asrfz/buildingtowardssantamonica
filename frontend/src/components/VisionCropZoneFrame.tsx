@@ -7,12 +7,27 @@ type Props = {
   alt?: string
   maxHeight?: number
   style?: CSSProperties
+  /** Default cyan (dev). Red matches hazard-analysis mockup. */
+  accent?: 'cyan' | 'red'
+  /** Centered label inside the crop rectangle (e.g. “Enhanced Camera Feed”). */
+  centerCaption?: string
+  /** Pill under the box, e.g. “POWER CORD — TRIP HAZARD”. */
+  hazardLabel?: string
 }
 
 /**
- * Full-frame image with dim outside the crop rectangle + cyan border (same rect as Cloudinary c_crop).
+ * Full-frame image with dim outside the crop rectangle + border (same rect as Cloudinary c_crop).
  */
-export function VisionCropZoneFrame({ src, zone, alt = 'Full frame', maxHeight = 220, style }: Props) {
+export function VisionCropZoneFrame({
+  src,
+  zone,
+  alt = 'Full frame',
+  maxHeight = 220,
+  style,
+  accent = 'cyan',
+  centerCaption,
+  hazardLabel,
+}: Props) {
   const maskId = useId().replace(/:/g, '')
   const [natural, setNatural] = useState({ w: 0, h: 0 })
 
@@ -20,6 +35,13 @@ export function VisionCropZoneFrame({ src, zone, alt = 'Full frame', maxHeight =
     const el = e.currentTarget
     setNatural({ w: el.naturalWidth, h: el.naturalHeight })
   }, [])
+
+  const rim = accent === 'red' ? 'rgba(239, 68, 68, 0.98)' : 'rgba(34, 211, 238, 0.95)'
+  const rimGlow =
+    accent === 'red'
+      ? '0 0 0 1px rgba(0,0,0,0.45), 0 0 18px rgba(239, 68, 68, 0.45)'
+      : '0 0 0 1px rgba(0,0,0,0.35), 0 0 16px rgba(34, 211, 238, 0.4)'
+  const dimFill = accent === 'red' ? 'rgba(0, 0, 0, 0.58)' : 'rgba(15, 23, 42, 0.52)'
 
   const boxPct = useMemo(() => {
     if (zone.fractional) {
@@ -48,6 +70,7 @@ export function VisionCropZoneFrame({ src, zone, alt = 'Full frame', maxHeight =
         borderRadius: 6,
         overflow: 'hidden',
         background: '#0a0f1a',
+        paddingBottom: hazardLabel ? 44 : 0,
         ...style,
       }}
     >
@@ -91,8 +114,63 @@ export function VisionCropZoneFrame({ src, zone, alt = 'Full frame', maxHeight =
                 />
               </mask>
             </defs>
-            <rect width="100" height="100" fill="rgba(15, 23, 42, 0.52)" mask={`url(#${maskId})`} />
+            <rect width="100" height="100" fill={dimFill} mask={`url(#${maskId})`} />
           </svg>
+          {accent === 'red' ? (
+            <>
+              <div
+                style={{
+                  pointerEvents: 'none',
+                  position: 'absolute',
+                  left: `${boxPct.left}%`,
+                  top: `${boxPct.top}%`,
+                  width: 14,
+                  height: 14,
+                  borderLeft: `3px solid ${rim}`,
+                  borderTop: `3px solid ${rim}`,
+                }}
+              />
+              <div
+                style={{
+                  pointerEvents: 'none',
+                  position: 'absolute',
+                  left: `${boxPct.left + boxPct.width}%`,
+                  top: `${boxPct.top}%`,
+                  width: 14,
+                  height: 14,
+                  transform: 'translateX(-100%)',
+                  borderRight: `3px solid ${rim}`,
+                  borderTop: `3px solid ${rim}`,
+                }}
+              />
+              <div
+                style={{
+                  pointerEvents: 'none',
+                  position: 'absolute',
+                  left: `${boxPct.left}%`,
+                  top: `${boxPct.top + boxPct.height}%`,
+                  width: 14,
+                  height: 14,
+                  transform: 'translateY(-100%)',
+                  borderLeft: `3px solid ${rim}`,
+                  borderBottom: `3px solid ${rim}`,
+                }}
+              />
+              <div
+                style={{
+                  pointerEvents: 'none',
+                  position: 'absolute',
+                  left: `${boxPct.left + boxPct.width}%`,
+                  top: `${boxPct.top + boxPct.height}%`,
+                  width: 14,
+                  height: 14,
+                  transform: 'translate(-100%, -100%)',
+                  borderRight: `3px solid ${rim}`,
+                  borderBottom: `3px solid ${rim}`,
+                }}
+              />
+            </>
+          ) : null}
           <div
             style={{
               pointerEvents: 'none',
@@ -102,11 +180,75 @@ export function VisionCropZoneFrame({ src, zone, alt = 'Full frame', maxHeight =
               width: `${boxPct.width}%`,
               height: `${boxPct.height}%`,
               boxSizing: 'border-box',
-              border: '2px solid rgba(34, 211, 238, 0.95)',
+              border: `2px solid ${rim}`,
               borderRadius: 4,
-              boxShadow: '0 0 0 1px rgba(0,0,0,0.35), 0 0 16px rgba(34, 211, 238, 0.4)',
+              boxShadow: rimGlow,
             }}
           />
+          {centerCaption ? (
+            <div
+              style={{
+                pointerEvents: 'none',
+                position: 'absolute',
+                left: `${boxPct.left}%`,
+                top: `${boxPct.top}%`,
+                width: `${boxPct.width}%`,
+                height: `${boxPct.height}%`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <span
+                style={{
+                  fontSize: '0.78rem',
+                  fontWeight: 600,
+                  letterSpacing: '0.12em',
+                  textTransform: 'uppercase' as const,
+                  color: 'rgba(248, 250, 252, 0.88)',
+                  textShadow: '0 1px 8px rgba(0,0,0,0.85)',
+                }}
+              >
+                {centerCaption}
+              </span>
+            </div>
+          ) : null}
+          {hazardLabel ? (
+            <div
+              style={{
+                pointerEvents: 'none',
+                position: 'absolute',
+                left: `${boxPct.left}%`,
+                top: `${boxPct.top + boxPct.height}%`,
+                width: `${boxPct.width}%`,
+                marginTop: 8,
+                display: 'flex',
+                justifyContent: 'center',
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '8px 14px',
+                  borderRadius: 999,
+                  fontSize: '0.72rem',
+                  fontWeight: 800,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase' as const,
+                  color: '#fff',
+                  background: 'linear-gradient(180deg, #dc2626 0%, #991b1b 100%)',
+                  border: '1px solid rgba(254, 202, 202, 0.5)',
+                  boxShadow: '0 4px 14px rgba(0,0,0,0.45)',
+                  maxWidth: '96%',
+                  textAlign: 'center',
+                }}
+              >
+                ⚠ {hazardLabel}
+              </span>
+            </div>
+          ) : null}
           {zone.zone_name ? (
             <div
               style={{

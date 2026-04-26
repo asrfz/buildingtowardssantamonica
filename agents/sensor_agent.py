@@ -7,13 +7,18 @@ from app.config import settings
 from app.database import connect_db, get_db
 from app.services.anomaly_detector import score_reading
 from app.models.sensor import SensorPayload
-from app.utils.serial_reader import get_latest_reading, start_serial_reader
+from app.utils.serial_reader import (
+    get_latest_reading,
+    serial_reader_gave_up,
+    start_serial_reader,
+)
 from agents.agent_messages import IrregularityEvent, TRIAGE_AGENT_ADDRESS
 
 logger = logging.getLogger(__name__)
 
 # Same collection name as app.routers.sensor.SIMULATION_QUEUE_COLL
 _SIM_COLL = "sensor_simulation_queue"
+_SENSOR_LIVE_SHADOW = "sensor_live_shadow"
 
 # Consecutive anomaly ticks (score triggered or force_triage). Reset when a tick is normal.
 _alert_streak: int = 0
@@ -40,6 +45,29 @@ async def startup(ctx: Context) -> None:
             "sensor_agent online — ARDUINO_SERIAL_ENABLED=false (no COM open; use /sensor/simulate)"
         )
     ctx.logger.info(f"sensor_agent address: {sensor_agent.address}")
+
+
+@sensor_agent.on_interval(period=10.0)
+async def push_serial_status(ctx: Context) -> None:
+    """Mirror COM port status into Mongo — FastAPI runs in another process and cannot see serial_reader_gave_up()."""
+    user_id = (settings.DEFAULT_USER_ID or "").strip()
+    if not user_id:
+        return
+    db = get_db()
+    try:
+        await db[_SENSOR_LIVE_SHADOW].update_one(
+            {"user_id_str": user_id},
+            {
+                "$set": {
+                    "serial_gave_up": serial_reader_gave_up(),
+                    "updated_at": datetime.utcnow(),
+                },
+                "$setOnInsert": {"user_id_str": user_id},
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        ctx.logger.debug("sensor_live_shadow serial flag update failed: %s", e)
 
 
 @sensor_agent.on_message(ChatMessage)
@@ -93,6 +121,21 @@ async def read_and_score(ctx: Context) -> None:
     except Exception as e:
         ctx.logger.warning(f"Invalid serial payload: {e}")
         return
+
+    try:
+        await db[_SENSOR_LIVE_SHADOW].update_one(
+            {"user_id_str": user_id},
+            {
+                "$set": {
+                    "payload": payload.model_dump(mode="json"),
+                    "serial_gave_up": serial_reader_gave_up(),
+                    "updated_at": datetime.utcnow(),
+                }
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        ctx.logger.debug("sensor_live_shadow update failed: %s", e)
 
     # Update heartbeat so heartbeat_agent knows we are alive
     await db.agent_heartbeats.update_one(
