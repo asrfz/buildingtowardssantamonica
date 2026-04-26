@@ -12,11 +12,9 @@ Enables natural-language event lookup:
 
 MongoDB features used:
   - Atlas Search ($search aggregation stage)
-  - compound operator: must + should for boosting recent results
+  - compound operator: must + filter clauses
   - text with fuzzy for typo tolerance
   - range filter on detected_at
-  - highlight for showing matched text in results
-  - searchMeta for result counts without fetching docs
   - Covered by index: sensor_event_search (created via scripts/create_search_index.py)
 
 The Atlas Search index uses a custom analyzer that:
@@ -87,7 +85,6 @@ async def search_events(
         "compound": {
             "must": must_clauses,
         },
-        "sort": {"score": {"$meta": "searchScore"}, "detected_at": -1},
     }
     if filter_clauses:
         search_stage["compound"]["filter"] = filter_clauses
@@ -96,19 +93,20 @@ async def search_events(
         {"$search": search_stage},
         {
             "$project": {
-                "event_id":         {"$toString": "$_id"},
-                "event_type":       1,
-                "event_label":      1,
-                "severity":         1,
-                "detected_at":      1,
+                "event_id":           {"$toString": "$_id"},
+                "event_type":         1,
+                "event_label":        1,
+                "severity":           1,
+                "detected_at":        1,
                 "recommended_action": 1,
-                "triage_reason":    1,
-                "status":           1,
-                "cropped_image_url": 1,
-                "score":            {"$meta": "searchScore"},
-                "_id":              0,
+                "triage_reason":      1,
+                "status":             1,
+                "cropped_image_url":  1,
+                "score":              {"$meta": "searchScore"},
+                "_id":                0,
             }
         },
+        {"$sort": {"score": {"$meta": "searchScore"}, "detected_at": -1}},
         {"$limit": limit},
     ]
 

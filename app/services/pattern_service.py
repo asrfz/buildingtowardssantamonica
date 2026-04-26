@@ -12,7 +12,6 @@ MongoDB features used:
   - $sortByCount for frequency ranking
   - $bucket for time-of-day distribution
   - $dateToString for temporal grouping
-  - $lookup to join incidents with events
   - $facet for parallel aggregation in one pipeline
 """
 from datetime import datetime, timedelta

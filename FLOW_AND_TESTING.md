@@ -4,6 +4,115 @@ This document describes how data moves through the backend, agents, and optional
 
 ---
 
+## Startup process (run the full program)
+
+Follow these steps **in order** the first time you run HomePulse locally. After that, you usually only need steps 6–8.
+
+### 1. Prerequisites
+
+- **Python 3.11+** (3.13 works; project uses async tests and modern typing)
+- **MongoDB** running and reachable (local install, Docker, or **MongoDB Atlas** URI)
+- **Git** (to clone the repo if you have not already)
+- Optional: **Node.js 20+** and npm — only if you use the `frontend/` dev console
+- Optional: **Arduino** on a COM port, **webcam**, **microphone** — only for hardware and voice-input paths; `POST /sensor/simulate` can drive the agent pipeline without serial
+
+### 2. Project setup
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Environment file
+
+Create or edit **`.env`** in the **repository root** (same folder as `app/`, `run_agents.py`). Minimum to get the API and agents talking to Mongo:
+
+- `MONGODB_URI` — e.g. `mongodb://localhost:27017` or Atlas connection string  
+- `MONGODB_DB_NAME` — e.g. `homepulse`  
+- `DEFAULT_USER_ID` — a valid **user** document `_id` as a **24-char hex string** (ObjectId)  
+- `FETCHAI_AGENT_SEED` — any stable secret string; changing it changes all agent addresses  
+
+Add API keys as you need features:
+
+- `ANTHROPIC_API_KEY` — triage, monitor, vision, emails, dashboard replies  
+- `AGENTVERSE_KEY` — ASI:One mailbox for `dashboard_agent`  
+- `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` — vision uploads  
+- `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD` — alert / digest email  
+- `ELEVENLABS_API_KEY` (and optional `ELEVENLABS_VOICE_ID`) — TTS and wake-word STT  
+
+See **`app/config.py`** for the full list and defaults.
+
+### 4. Agent addresses (required before `run_agents.py`)
+
+Agents message each other by **Fetch.ai address**. Those strings must match your `FETCHAI_AGENT_SEED`.
+
+```bash
+python scripts/register_agents.py
+```
+
+Copy the printed `*_AGENT_ADDRESS` lines into **`agents/agent_messages.py`**, replacing the old values.
+
+**Do not leave `DASHBOARD_AGENT_ADDRESS` empty** if you use **`voice_input_agent`**: spoken queries are sent to the dashboard agent at that address.
+
+### 5. Frontend env (optional)
+
+If you use the React app:
+
+```bash
+cd frontend
+copy .env.local.example .env.local   # Windows; use cp on Unix
+npm install
+```
+
+Fill Cloudinary / API base URL in `.env.local` as needed.
+
+### 6. Start MongoDB
+
+Ensure the database in **`MONGODB_URI`** is up (local service started, or Atlas reachable).
+
+### 7. Start the API (terminal 1)
+
+From the **repo root**:
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+- Interactive docs: **http://localhost:8000/docs**  
+- Voice overlay page: **http://localhost:8000/voice** (WebSocket **`ws://localhost:8000/voice/ws`**)
+
+### 8. Start the agent bureau (terminal 2)
+
+From the **repo root**:
+
+```bash
+python run_agents.py
+```
+
+This runs **all** agents in one process (sensor, triage, vision, monitor, notification, dashboard, voice, etc.). The bureau listens on port **8002** by default for uAgents REST traffic; **8000** remains the FastAPI port.
+
+**Order:** API first, then bureau, is the usual habit so `voice_input_agent` can `POST` to `http://localhost:8000/voice/push` as soon as it starts.
+
+### 9. Start the frontend (optional, terminal 3)
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open the URL Vite prints (typically **http://localhost:5173**).
+
+### 10. Quick verification
+
+- **Health / API:** open **http://localhost:8000/docs** and try a simple `GET` if you have one wired, or proceed to simulate.  
+- **Simulated sensor (full pipeline):** `POST /sensor/simulate` with a JSON body matching **`SensorPayload`** (see **Testing steps** later in this doc). Expect a short delay before **`sensor_agent`** picks up the injected reading.  
+- **Voice overlay:** open **http://localhost:8000/voice**, run the bureau with addresses configured, speak a wake phrase (see **Voice paths** below).  
+
+### 11. ASI:One / Agentverse (production-style chat)
+
+Register the **dashboard** agent on Agentverse and point its HTTP integration at your public **`POST .../dashboard/chat`** URL (deployed host or tunnel). `AGENTVERSE_KEY` in `.env` must match the mailbox agent configuration.
+
+---
+
 ## Architecture at a glance
 
 | Component | Role | Typical command |

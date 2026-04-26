@@ -8,6 +8,7 @@ from app.services.vector_service import (
     vector_anomaly_score,
     ANOMALY_SIMILARITY_THRESHOLD,
 )
+from app.services.threshold_service import get_user_thresholds, get_multiplier
 
 
 @dataclass
@@ -53,8 +54,7 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
     if not baseline:
         return AnomalyResult(triggered=False, reason="no_baseline")
 
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
-    multiplier = (user or {}).get("threshold_multiplier", 2.5)
+    thresholds = await get_user_thresholds(user_id, db)
 
     # Compute embedding once — reused for storage regardless of trigger path
     embedding = payload_to_embedding(payload, baseline)
@@ -64,7 +64,7 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
     temp_mean = baseline["temperature"]["mean"]
     temp_std  = baseline["temperature"]["std_dev"]
     temp_dev  = abs(payload.temperature_c - temp_mean)
-    if temp_dev > multiplier * temp_std:
+    if temp_dev > get_multiplier(thresholds, "temperature_c") * temp_std:
         score = round(temp_dev / temp_std, 2)
         await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
@@ -78,7 +78,7 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
     sound_mean = baseline["sound_level"]["mean"]
     sound_std  = baseline["sound_level"]["std_dev"]
     sound_dev  = abs(payload.sound_level - sound_mean)
-    if sound_dev > multiplier * sound_std:
+    if sound_dev > get_multiplier(thresholds, "sound_level") * sound_std:
         score = round(sound_dev / sound_std, 2)
         await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(

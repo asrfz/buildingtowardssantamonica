@@ -16,11 +16,15 @@ MongoDB features used:
   - Transactions: incident insert + event link on events are atomic
   - Time-series style queries via aggregation ($group by day) for risk timeline
 """
+import logging
 import math
 from datetime import datetime
 from bson import ObjectId
+from pymongo.errors import OperationFailure
 from app.services.vector_service import EMBEDDING_FIELDS, _FALLBACK
 from app.utils.event_labels import label_for_event_type
+
+logger = logging.getLogger(__name__)
 
 # Risk scores per severity
 _RISK_SCORES = {
@@ -99,14 +103,23 @@ async def create_incident_report(
         "created_at":        now,
     }
 
-    async with await db.client.start_session() as session:
-        async with session.start_transaction():
-            result = await db.incident_reports.insert_one(report_doc, session=session)
-            await db.events.update_one(
-                {"_id": ObjectId(event_id)},
-                {"$set": {"incident_report_id": result.inserted_id}},
-                session=session,
-            )
+    try:
+        async with await db.client.start_session() as session:
+            async with session.start_transaction():
+                result = await db.incident_reports.insert_one(report_doc, session=session)
+                await db.events.update_one(
+                    {"_id": ObjectId(event_id)},
+                    {"$set": {"incident_report_id": result.inserted_id}},
+                    session=session,
+                )
+    except OperationFailure as exc:
+        # Standalone local MongoDB doesn't support transactions — fall back to two writes.
+        logger.warning("Transaction unavailable (%s) — using non-transactional fallback", exc)
+        result = await db.incident_reports.insert_one(report_doc)
+        await db.events.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": {"incident_report_id": result.inserted_id}},
+        )
 
     return str(result.inserted_id)
 
