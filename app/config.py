@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     ELEVENLABS_API_KEY: str = ""
     ELEVENLABS_VOICE_ID: str = "21m00Tcm4TlvDq8ikWAM"   # Rachel — default, override in .env
 
+    # Internal HTTP base for agents → FastAPI (browser capture, /voice/push).
+    # Default 127.0.0.1 avoids Windows localhost→IPv6 connection issues.
+    HOMEPULSE_API_BASE: str = "http://127.0.0.1:8000"
+
     # App Settings
     APP_ENV: str = "development"
     DEFAULT_USER_ID: str = ""

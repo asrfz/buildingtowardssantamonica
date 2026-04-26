@@ -70,6 +70,7 @@ async def pull_history(ctx: Context, sender: str, msg: TriageResult) -> None:
         UserHistoryContext(
             event_id=msg.event_id,
             user_id=msg.user_id,
+            triage_event_type=msg.event_type,
             sensor_payload=msg.sensor_payload,
             deviation_score=msg.deviation_score,
             recent_events=serialized_events,

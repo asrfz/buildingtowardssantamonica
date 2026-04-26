@@ -259,6 +259,7 @@ async def run_scenario(name: str, scenario: dict) -> None:
             behavioral_schema={},
             hour=hour,
             day_type=day_type,
+            triage_event_type=result.event_type,
         )
     except Exception as e:
         _warn(f"Claude reasoning failed: {e}")

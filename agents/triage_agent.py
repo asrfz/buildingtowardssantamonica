@@ -18,7 +18,9 @@ from agents.agent_messages import (
 
 logger = logging.getLogger(__name__)
 
-_PUSH_URL = "http://localhost:8000/voice/push"
+
+def _voice_push_url() -> str:
+    return f"{settings.HOMEPULSE_API_BASE.rstrip('/')}/voice/push"
 
 
 def _sensor_alert_text(event_type: str, payload: dict, sensor_reason: str) -> str:
@@ -66,7 +68,7 @@ def _sensor_alert_text(event_type: str, payload: dict, sensor_reason: str) -> st
 async def _push_status(text: str) -> None:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            await client.post(_PUSH_URL, json={"type": "transcript", "text": text})
+            await client.post(_voice_push_url(), json={"type": "transcript", "text": text})
     except Exception:
         pass
 

@@ -68,8 +68,10 @@ voice_input_agent = Agent(
 # query_id -> original transcript; used when pushing answer to WebSocket
 _pending: dict[str, str] = {}
 
-# FastAPI voice push URL (internal -- localhost only)
-_PUSH_URL = "http://localhost:8000/voice/push"
+
+def _voice_push_url() -> str:
+    return f"{settings.HOMEPULSE_API_BASE.rstrip('/')}/voice/push"
+
 
 # Phrases (after wake word) that mean "send the deferred alert email"
 _EXTERNAL_HELP_PHRASES = (
@@ -248,7 +250,7 @@ async def _push(msg_type: str, text: str) -> None:
     """POST a message to the FastAPI WebSocket push endpoint."""
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            await client.post(_PUSH_URL, json={"type": msg_type, "text": text})
+            await client.post(_voice_push_url(), json={"type": msg_type, "text": text})
     except Exception as exc:
         logger.warning(
             "[VoiceInput] WebSocket push failed (is uvicorn on :8000?): %s",
