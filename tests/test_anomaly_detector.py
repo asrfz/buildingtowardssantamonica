@@ -15,13 +15,25 @@ from datetime import datetime
 from app.services.anomaly_detector import score_reading, _classify_temp_event, _classify_sound_event
 from app.utils.severity import compute_severity
 from app.models.sensor import SensorPayload
-from tests.conftest import DEMO_USER_ID
+from test_support.constants import DEMO_USER_ID
 
 
 def _make_payload(data: dict) -> SensorPayload:
-    if "timestamp" not in data:
-        data["timestamp"] = datetime.utcnow()
-    return SensorPayload(**data)
+    """Merge partial overrides with a full valid demo payload (all sensor fields)."""
+    base = {
+        "sound_level": 210,
+        "temperature_c": 22.0,
+        "magnetic_state": 0,
+        "accel_x": 0.01,
+        "accel_y": 0.02,
+        "accel_z": 9.80,
+        "pressure": 1013.0,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    base.update(data)
+    if "timestamp" in data and isinstance(data["timestamp"], datetime):
+        base["timestamp"] = data["timestamp"].isoformat()
+    return SensorPayload(**base)
 
 
 # ── Normal readings ──────────────────────────────────────────────────────────
@@ -121,7 +133,14 @@ class TestEventTypeClassification:
         assert _classify_temp_event(p) == "STOVE_LEFT_ON"
 
     def test_moderate_temp_low_accel_is_iron(self):
-        p = _make_payload({"temperature_c": 35.0, "accel_x": 0.001, "accel_y": 0.001, "accel_z": 9.81})
+        p = _make_payload(
+            {
+                "temperature_c": 35.0,
+                "accel_x": 0.0,
+                "accel_y": 0.0,
+                "accel_z": 0.15,
+            }
+        )
         assert _classify_temp_event(p) == "IRON_LEFT_ON"
 
     def test_high_temp_high_accel_is_fire(self, fire_payload):

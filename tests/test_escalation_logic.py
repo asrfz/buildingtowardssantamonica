@@ -11,7 +11,7 @@ No API keys needed — pure logic tests.
 """
 import pytest
 from app.utils.severity import compute_severity
-from tests.conftest import DEMO_USER_DOC
+from test_support.constants import DEMO_USER_DOC
 
 
 # ── Severity ladder: recipient routing ───────────────────────────────────────

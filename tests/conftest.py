@@ -9,37 +9,13 @@ import pytest_asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 from bson import ObjectId
-
-# ── Constants used across tests ──────────────────────────────────────────────
-DEMO_USER_ID = str(ObjectId())
-DEMO_EVENT_ID = str(ObjectId())
-
-# Seeded baselines (same values as scripts/seed_demo.py)
-# Trigger thresholds: temp > 25.75°C | sound > 325 | magnetic = 1
-BASELINE = {
-    "temperature": {"mean": 22.0, "std_dev": 1.5},
-    "sound_level":  {"mean": 200,  "std_dev": 50},
-    "magnetic_state": {"mean": 0,  "std_dev": 0.1},
-    "accel_x": {"mean": 0.0, "std_dev": 0.05},
-    "accel_y": {"mean": 0.0, "std_dev": 0.05},
-    "accel_z": {"mean": 9.81, "std_dev": 0.1},
-    "pressure": {"mean": 1013.0, "std_dev": 2.0},
-}
-
-DEMO_USER_DOC = {
-    "_id": ObjectId(DEMO_USER_ID),
-    "name": "Margaret Chen",
-    "email": "test@example.com",
-    "emergency_contacts": [{"name": "Son", "email": "son@example.com", "relationship": "son"}],
-    "threshold_multiplier": 2.5,
-    "created_at": datetime.utcnow(),
-}
-
-BEHAVIORAL_SCHEMA_DOC = {
-    "user_id": ObjectId(DEMO_USER_ID),
-    "event_type_history": {},
-    "updated_at": datetime.utcnow(),
-}
+from test_support.constants import (
+    BEHAVIORAL_SCHEMA_DOC,
+    BASELINE,
+    DEMO_EVENT_ID,
+    DEMO_USER_DOC,
+    DEMO_USER_ID,
+)
 
 
 # ── Sample sensor payloads ───────────────────────────────────────────────────
@@ -67,8 +43,13 @@ def normal_payload() -> dict:
 
 @pytest.fixture
 def stove_payload() -> dict:
-    """48°C — 17.3x above temperature baseline → STOVE_LEFT_ON."""
-    return _payload(temperature_c=48.0, accel_x=0.01, accel_y=0.01, accel_z=9.80)
+    """48°C — 17.3x above temperature baseline → STOVE_LEFT_ON. Low |a| = still / left-on."""
+    return _payload(
+        temperature_c=48.0,
+        accel_x=0.0,
+        accel_y=0.0,
+        accel_z=0.2,  # |a| < 0.5 → not FIRE_RISK in _classify_temp_event
+    )
 
 
 @pytest.fixture
@@ -92,7 +73,12 @@ def fire_payload() -> dict:
 @pytest.fixture
 def iron_payload() -> dict:
     """Moderate heat spike + near-zero acceleration → IRON_LEFT_ON."""
-    return _payload(temperature_c=35.0, accel_x=0.001, accel_y=0.001, accel_z=9.81)
+    return _payload(
+        temperature_c=35.0,
+        accel_x=0.0,
+        accel_y=0.0,
+        accel_z=0.15,  # |a| < 0.5, temp 35 ≤ 40 → iron
+    )
 
 
 @pytest.fixture

@@ -69,7 +69,7 @@ async def escalate(ctx: Context, sender: str, msg: MonitorDecision) -> None:
             recommended_action=msg.recommended_action,
             cancel_window_seconds=cancel_window,
             event_type=msg.confirmed_event_type,
-            sensor_payload={},   # already stored in MongoDB at this point
+            sensor_payload=msg.sensor_payload,
             image_url=msg.image_url,
         ),
     )

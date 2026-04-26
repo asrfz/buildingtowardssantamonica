@@ -15,7 +15,7 @@
 5. **Claude calls go through `claude_service.py`** — never import `anthropic` directly in agent files.
 6. **Agents don't touch DB directly** — agents call FastAPI services via HTTP or import service functions.
 7. **Sensor readings are untrusted** — validate ranges before processing.
-8. **One Claude call per event** — never call Claude on every sensor reading.
+8. **Claude is not for raw sensor streaming** — never call Claude on every 5s sensor reading. A confirmed event may use Claude several times: triage, object detection in `vision_service`, monitor reasoning, optional `voice_agent` correction ticks — each is intentional, not a sensor poll.
 
 ---
 
@@ -32,7 +32,8 @@
 8.  If dismissed → log to MongoDB, stop chain
 9.  If confirmed → send TriageResult to history_agent AND vision_agent (parallel)
 10. history_agent pulls MongoDB context → sends UserHistoryContext to monitor_agent
-11. vision_agent captures webcam frame → OpenCV zone → Cloudinary → sends VisionResult to monitor_agent
+11. vision_agent captures frame → OpenCV; Claude vision finds zone (or Mongo `room_zones` fallback) → Cloudinary upload + crop (`q_auto`) → VisionResult to monitor_agent; if zones are fractional (`pct`), VoiceAlert to voice_agent
+11a. voice_agent (only if step 11 sent VoiceAlert): initial phrase via ElevenLabs (`tts_service`); then every ~3s OpenCV frame → JPEG base64 → `locate_object_and_user_in_frame` → `spatial_service` → ElevenLabs until timeout/retrieved (Cloudinary not used on ticks)
 12. monitor_agent waits for both, then calls Claude (claude_service.reason_about_event())
 13. Claude returns: event_type, severity, recommended_action, email_summary
 14. monitor_agent writes event to MongoDB events collection
