@@ -102,6 +102,7 @@ async def search_events(
                 "triage_reason":      1,
                 "status":             1,
                 "cropped_image_url":  1,
+                "cropped_thumb_url":  1,
                 "score":              {"$meta": "searchScore"},
                 "_id":                0,
             }

@@ -10,6 +10,13 @@ class Settings(BaseSettings):
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
+    # Max width for alert thumbnail URL (c_limit — same zone crop, smaller file for email / lists).
+    CLOUDINARY_ALERT_THUMB_MAX_WIDTH: int = 480
+    # If set, applied after the zone crop instead of inline sharpen + improve + q_auto + f_auto + dpr_auto
+    # (create the named transformation in the Cloudinary console; e.g. homepulse_alert_postcrop).
+    CLOUDINARY_NAMED_TRANSFORM_POSTCROP: str = ""
+    # Delete homepulse/raw/{event_id} when the user marks an event false positive (PATCH .../confirm).
+    CLOUDINARY_DESTROY_ON_FALSE_POSITIVE: bool = True
 
     # Gmail SMTP
     GMAIL_ADDRESS: str = ""

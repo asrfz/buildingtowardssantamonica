@@ -88,6 +88,14 @@ async def notify(ctx: Context, sender: str, msg: EscalationOrder) -> None:
     # Auto-create incident report for MEDIUM+ severity events
     if msg.severity in ("MEDIUM", "HIGH", "CRITICAL"):
         try:
+            ev_doc = await db.events.find_one({"_id": ObjectId(msg.event_id)})
+            raw_u = (ev_doc or {}).get("raw_image_url") or ""
+            crop_u = (ev_doc or {}).get("cropped_image_url") or ""
+            image_urls = {
+                "raw": raw_u or msg.image_url,
+                "cropped": crop_u or msg.image_url,
+                "thumb": msg.image_url,
+            }
             report_id = await create_incident_report(
                 event_id=msg.event_id,
                 user_id=msg.user_id,
@@ -95,7 +103,7 @@ async def notify(ctx: Context, sender: str, msg: EscalationOrder) -> None:
                 severity=msg.severity,
                 sensor_payload=msg.sensor_payload,
                 recommended_action=msg.recommended_action,
-                image_urls={"raw": msg.image_url, "cropped": msg.image_url},
+                image_urls=image_urls,
                 db=db,
                 resolution="notified" if success else "notification_failed",
             )

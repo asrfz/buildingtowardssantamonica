@@ -2,6 +2,8 @@ import logging
 from datetime import datetime, timedelta
 from bson import ObjectId
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +37,15 @@ async def record_outcome(event_id: str, confirmed: bool, db) -> None:
             await update_running_stats(str(user_id), payload, db)
         except Exception as e:
             logger.error(f"Baseline update failed: {e}")
+    elif settings.CLOUDINARY_DESTROY_ON_FALSE_POSITIVE:
+        try:
+            from app.services.cloudinary_service import destroy_event_raw_image
+
+            ok = await destroy_event_raw_image(event_id)
+            if ok:
+                logger.info("Cloudinary asset removed for false positive event %s", event_id[:12])
+        except Exception as e:
+            logger.warning("Cloudinary destroy skipped or failed for %s: %s", event_id[:12], e)
 
 
 async def _update_false_positive_rate(

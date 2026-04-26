@@ -13,7 +13,10 @@ type LiveAlert = {
   label: string
   severity: string
   recommended_action: string
+  /** Full zone crop (Cloudinary delivery URL) */
   image_url?: string
+  /** Width-limited crop for cards / email */
+  image_thumb_url?: string
   time: string
 }
 
@@ -49,6 +52,7 @@ export default function App() {
       event_type: string
       severity: string
       cropped_image_url: string | null
+      cropped_thumb_url: string | null
       raw_image_url: string | null
       detected_at: string
     }[]
@@ -60,6 +64,7 @@ export default function App() {
       snapshot_id: string
       url: string
       cropped_url: string
+      cropped_thumb_url?: string
       source: string
       event_id: string | null
       event_type: string
@@ -130,19 +135,21 @@ export default function App() {
         .map((e) => {
           const id = String(e.event_id ?? '')
           const crop = (e.cropped_image_url as string | undefined) || null
+          const cthumb = (e.cropped_thumb_url as string | undefined)?.trim() || null
           const raw = (e.raw_image_url as string | undefined) || null
           return {
             event_id: id,
             event_type: String(e.event_type ?? ''),
             severity: String(e.severity ?? ''),
             cropped_image_url: crop,
+            cropped_thumb_url: cthumb,
             raw_image_url: raw,
             detected_at: e.detected_at != null ? String(e.detected_at) : '',
           }
         })
         .filter(
           (e) =>
-            (e.cropped_image_url || e.raw_image_url) && e.event_id,
+            (e.cropped_image_url || e.cropped_thumb_url || e.raw_image_url) && e.event_id,
         )
         .slice(0, 24)
       setCloudinaryClips(withMedia)
@@ -184,6 +191,7 @@ export default function App() {
           snapshot_id: string
           url: string
           cropped_url: string
+          cropped_thumb_url?: string
           source: string
           event_id: string | null
           event_type: string
@@ -253,6 +261,10 @@ export default function App() {
             const severity = String(msg.data.severity || 'MEDIUM').toUpperCase()
             const recommended = String(msg.data.recommended_action || msg.text || '')
             const imageUrl = msg.data.image_url || undefined
+            const imageThumb =
+              typeof msg.data.image_thumb_url === 'string' && msg.data.image_thumb_url.trim()
+                ? msg.data.image_thumb_url.trim()
+                : undefined
             const time = new Date().toLocaleTimeString()
             setAlerts((prev) => {
               const id = eventId || `anon-${label}-${recommended.slice(0, 40)}`
@@ -262,6 +274,7 @@ export default function App() {
                 severity,
                 recommended_action: recommended,
                 image_url: imageUrl,
+                image_thumb_url: imageThumb,
                 time,
               }
               const without = prev.filter((a) => a.id !== id)
@@ -454,8 +467,12 @@ export default function App() {
                         </button>
                       </div>
                       <p style={{ margin: 0, fontSize: '0.875rem', color: '#475569' }}>{alert.recommended_action}</p>
-                      {alert.image_url && (
-                        <img src={alert.image_url} alt={alert.label} style={{ marginTop: 8, maxWidth: '100%', maxHeight: 160, borderRadius: 6, objectFit: 'cover' }} />
+                      {(alert.image_thumb_url || alert.image_url) && (
+                        <img
+                          src={alert.image_thumb_url || alert.image_url}
+                          alt={alert.label}
+                          style={{ marginTop: 8, maxWidth: '100%', maxHeight: 160, borderRadius: 6, objectFit: 'cover' }}
+                        />
                       )}
                     </div>
                   )
@@ -526,9 +543,9 @@ export default function App() {
           <section className="card camera-card">
             <h2>Vision clips (Cloudinary)</h2>
             <p className="hint">
-              After triage + vision, events get <code>cropped_image_url</code> (zone evidence) and <code>raw_image_url</code>.
-              Loaded from <code>GET /events/&#123;userId&#125;</code>. The preview above is the live bureau FOV; this grid is
-              alert-specific.
+              After triage + vision, events get <code>cropped_image_url</code> (full delivery),{' '}
+              <code>cropped_thumb_url</code> (width-limited for lists/email), and <code>raw_image_url</code>. Grid tiles prefer
+              the thumb. Loaded from <code>GET /events/&#123;userId&#125;</code>.
             </p>
             {clipsError ? <p className="warn">{clipsError}</p> : null}
             <div className="btn-row" style={{ marginBottom: 8 }}>
@@ -550,7 +567,8 @@ export default function App() {
                 }}
               >
                 {cloudinaryClips.map((c) => {
-                  const src = c.cropped_image_url || c.raw_image_url || ''
+                  const src = c.cropped_thumb_url || c.cropped_image_url || c.raw_image_url || ''
+                  const fullHref = c.cropped_image_url || c.raw_image_url || src
                   const sev = SEV_COLORS[c.severity] ?? SEV_COLORS.MEDIUM
                   return (
                     <figure
@@ -564,11 +582,13 @@ export default function App() {
                       }}
                     >
                       {src ? (
-                        <img
-                          src={src}
-                          alt={c.event_type}
-                          style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
-                        />
+                        <a href={fullHref} target="_blank" rel="noreferrer">
+                          <img
+                            src={src}
+                            alt={c.event_type}
+                            style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
+                          />
+                        </a>
                       ) : null}
                       <figcaption style={{ padding: '8px 10px', fontSize: '0.75rem', color: sev.text }}>
                         <strong>{c.event_type}</strong> · {c.severity}
@@ -623,7 +643,7 @@ export default function App() {
                 }}
               >
                 {snapshotGallery.map((s) => {
-                  const thumb = (s.cropped_url || s.url || '').trim()
+                  const thumb = (s.cropped_thumb_url || s.cropped_url || s.url || '').trim()
                   const badgeBg = s.source === 'vision' ? '#1e3a5f' : '#3d3518'
                   const badgeFg = '#e8eef6'
                   return (

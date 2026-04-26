@@ -1,141 +1,179 @@
 # HomePulse × Cloudinary — Track Pitch
 
-## What We Built
+## Cloudinary feature index {#cloudinary-feature-index}
 
-HomePulse captures webcam frames the moment a sensor anomaly is confirmed. Those frames are uploaded to Cloudinary, transformed through a multi-stage encoding pipeline, and distributed to caregivers in alert emails and to the AI pipeline for multimodal reasoning. Cloudinary handles every image in the system — upload, crop, enhance, encode, and serve.
+Every Cloudinary capability this repo uses, with jump links:
 
----
-
-## The Encoding Pipeline
-
-Every alert image goes through the same transformation chain:
-
-```
-Raw JPEG upload  →  c_crop  →  e_sharpen:80  →  e_improve  →  q_auto  →  f_auto
-```
-
-**Second delivery URL (same `public_id`, no second upload):** when `CLOUDINARY_AI_CONTEXT_EXPAND=true`, we also build `context_expanded_url`: **`c_pad`** to a slightly larger canvas with **`b_gen_fill`** (Generative Fill / outpaint) on the **full raw frame**, then the same improve / `q_auto` / `f_auto` tail. Border pixels are **AI-generated** — the dev UI labels them as illustrative, not evidence. Disable via env if your plan omits Generative Fill.
-
-### Stage 1 — Raw Upload
-
-The OpenCV webcam frame is JPEG-encoded in memory and uploaded to Cloudinary under a consistent public ID:
-
-```python
-raw = cloudinary.uploader.upload(
-    buffer.tobytes(),
-    public_id=f"homepulse/raw/{event_id}",
-    resource_type="image",
-    overwrite=True,
-)
-```
-
-The raw full-frame image is kept for audit trail purposes — `monitor_agent` includes the raw URL in the MongoDB event document and passes it to Claude for full-scene context when needed.
-
-### Stage 2 — c_crop (Dynamic Zone Cropping)
-
-The crop is applied using the zone bounding box detected by Claude vision. Claude returns fractional coordinates (0.0–1.0 as a fraction of the image dimensions). Cloudinary's `fl_relative` flag accepts these directly:
-
-```python
-if zone.get("pct"):
-    crop_transform = {
-        "crop": "crop",
-        "x": zone["x"],
-        "y": zone["y"],
-        "width": zone["w"],
-        "height": zone["h"],
-        "flags": "relative",    # fractions, not pixels
-    }
-```
-
-This means Claude's fractional bounding box output is used **directly** as Cloudinary crop parameters — no coordinate conversion, no scaling math. The same coordinate space that Claude uses for spatial voice guidance is the coordinate space Cloudinary uses for the alert thumbnail crop.
-
-If Claude vision fails to detect the object, MongoDB-stored pixel coordinates from manual zone calibration serve as fallback (no `fl_relative` flag, absolute pixel values instead).
-
-### Stage 3 — e_sharpen:80
-
-Webcam footage is softer than reference photographs. A sharpening pass at intensity 80 compensates for motion blur and autofocus lag, making the cropped object zone crisp enough to be useful in a caregiver alert email — especially for small objects like burner knobs or dripping faucets.
-
-### Stage 4 — e_improve
-
-Cloudinary's content-aware auto-enhancement adjusts brightness, contrast, and saturation per-image based on the image's actual content. A dimly-lit nighttime kitchen gets different treatment than a bright midday scene. This runs without any manual calibration and handles the full range of lighting conditions that occur in a real home over 24 hours.
-
-### Stage 5 — q_auto (Context-Aware Quality Encoding)
-
-`q_auto` analyzes each image's visual complexity and selects the smallest file size that retains perceived visual quality:
-
-- A blurry background behind a sharp stove burner → low quality for the background, high quality for the burner area
-- A noisy nighttime frame → more aggressive compression without visible degradation
-- A sharp daytime scene with clear detail → higher quality to preserve the diagnostic value
-
-Webcam frames vary wildly in quality — exposure, noise, motion, lighting all shift throughout a day of real use. `q_auto` removes the manual quality tuning problem entirely. Alert thumbnails in emails are always crisp and appropriately compressed without a per-image quality knob.
-
-```python
-transformation = [
-    _build_crop_transform(zone),
-    {"effect": "sharpen:80"},
-    {"effect": "improve"},
-    {"quality": "auto"},
-    {"fetch_format": "auto"},  # f_auto — WebP/AVIF where supported
-]
-
-cropped_url = cloudinary.utils.cloudinary_url(
-    f"homepulse/raw/{event_id}",
-    transformation=transformation,
-)[0]
-```
-
-The cropped URL is generated via `cloudinary_url()` — no second upload. A separate **`context_expanded_url`** uses another transformation chain on the same asset (pad + generative fill + tail) when enabled in `app/config.py`.
-
-### Stage 6 — Optional Generative Fill (full-frame context)
-
-For demos where objects are clipped at the frame edge, an optional URL pads the canvas and uses **`b_gen_fill`** so Cloudinary outpaints the margins. Optional env **`CLOUDINARY_AI_CONTEXT_PROMPT`** steers the fill (short phrase); empty leaves behavior to Cloudinary. Stored on events as `context_expanded_image_url` and in `camera_snapshots.context_expanded_url`.
+| ID | Feature | Where |
+|----|---------|--------|
+| [feat-upload](#feat-upload) | `uploader.upload` — raw bytes, `public_id`, `resource_type=image`, `overwrite` | Alerts, previews, calibration |
+| [feat-tags](#feat-tags) | Upload `tags` (comma-separated) | All uploads |
+| [feat-public-id-layout](#feat-public-id-layout) | Namespaced `public_id` paths | `homepulse/raw/…`, `homepulse/snapshots/…`, etc. |
+| [feat-secure-url](#feat-secure-url) | `secure_url` from upload response | Stored in Mongo / API |
+| [feat-cloudinary-url](#feat-cloudinary-url) | `cloudinary.utils.cloudinary_url` — delivery URLs without second upload | `cropped_url`, `cropped_thumb_url` |
+| [feat-crop-relative](#feat-crop-relative) | `crop=crop` + `flags=relative` (fractional x,y,w,h) | Zone from vision (0–1 coords) |
+| [feat-crop-absolute](#feat-crop-absolute) | `crop=crop` with integer x,y,w,h | Zone from Mongo calibration |
+| [feat-named-transform](#feat-named-transform) | Named transformation after crop (`transformation` key) | Optional `CLOUDINARY_NAMED_TRANSFORM_POSTCROP` |
+| [feat-sharpen](#feat-sharpen) | `e_sharpen:80` | Default post-crop; always on thumbnail chain |
+| [feat-improve](#feat-improve) | `e_improve` | Delivery tail |
+| [feat-q-auto](#feat-q-auto) | `q_auto` | Delivery tail |
+| [feat-f-auto](#feat-f-auto) | `f_auto` (`fetch_format: auto`) | Delivery tail |
+| [feat-dpr-auto](#feat-dpr-auto) | `dpr_auto` | Caregiver-facing full + thumb chains |
+| [feat-c-limit](#feat-c-limit) | `c_limit` + max width | `cropped_thumb_url` |
+| [feat-destroy](#feat-destroy) | `uploader.destroy` + `invalidate=True` | False-positive confirm (optional) |
 
 ---
 
-## How Cloudinary Images Flow Through the System
+## What we built {#what-we-built}
+
+HomePulse captures webcam frames when a sensor anomaly is confirmed. Frames upload to Cloudinary once; we serve **two** derived delivery URLs from the same `public_id` (full crop chain and width-limited thumb). Images flow to caregivers (email, dashboard, voice push), multimodal AI, and audit fields in MongoDB. Cloudinary provides storage, CDN, and on-the-fly transformation.
+
+---
+
+## Encoding pipeline {#encoding-pipeline}
+
+### Alert capture (`homepulse/raw/{event_id}`) {#alert-pipeline}
+
+1. **Raw upload** — JPEG bytes uploaded with tags (see [feat-tags](#feat-tags)).
+2. **Zone crop** — `c_crop` from Claude vision (fractional) or calibration (pixels); see [feat-crop-relative](#feat-crop-relative) / [feat-crop-absolute](#feat-crop-absolute).
+3. **Post-crop** — Either a **named** Cloudinary transformation ([feat-named-transform](#feat-named-transform)) when `CLOUDINARY_NAMED_TRANSFORM_POSTCROP` is set, or inline: sharpen → improve → `q_auto` → `f_auto` → `dpr_auto` ([feat-sharpen](#feat-sharpen) through [feat-dpr-auto](#feat-dpr-auto)).
+4. **Thumbnail chain** — Same crop, then sharpen → **`c_limit,w_<max>`** ([feat-c-limit](#feat-c-limit)) → improve → `q_auto` → `f_auto` → `dpr_auto`. Max width from `CLOUDINARY_ALERT_THUMB_MAX_WIDTH` (default 480). Thumbnail always uses the inline tail (even when the full crop uses a named transform), so list/email tiles stay predictable.
 
 ```
-vision_agent captures frame (OpenCV)
-    → cloudinary_service.upload_and_crop()
-        → raw upload → homepulse/raw/{event_id}
-        → generate cropped_url with [crop, sharpen, improve, q_auto, f_auto]
-        → optional context_expanded_url [pad, gen_fill, improve, q_auto, f_auto]
-    → VisionResult(raw_url, cropped_url, context_expanded_url) → monitor_agent
-        → monitor_agent passes cropped_url to Claude for multimodal reasoning
-        → monitor_agent stores URLs in MongoDB (`context_expanded_image_url` for AI-extended view)
-    → VoiceAlert(raw_url, object_bbox) → voice_agent
-        → voice_agent speaks directional alert using bbox for spatial guidance
-    → escalation_agent → notification_agent
-        → Claude writes HTML email including <img src={cropped_url}>
-        → email delivered to caregiver with cropped alert image inline
+Raw JPEG upload  →  c_crop  →  (named transform | sharpen → improve → q_auto → f_auto → dpr_auto)
+                    └ same crop → sharpen → c_limit,w_MAX → improve → q_auto → f_auto → dpr_auto  (thumb)
 ```
 
----
+Implementation: `app/services/cloudinary_service.py`.
 
-## What Cloudinary Does That the Code Doesn't
+### Other uploads {#other-uploads}
 
-**Storage and CDN.** Cloudinary serves images directly from its CDN to email clients. No FastAPI endpoint needed to serve alert images, no S3 bucket, no signed URL expiry logic.
-
-**Transformation on demand.** The raw frame is uploaded once. The crop, sharpen, improve, and q_auto transformations are applied every time the cropped URL is requested — if we change the transformation chain, every future request gets the new version without re-uploading.
-
-**Format negotiation.** Cloudinary automatically serves WebP to browsers that accept it and JPEG to clients that don't. Email clients receive an appropriate format for their capabilities.
-
-**Coordinate system bridging.** The `fl_relative` flag means Claude's output (0.0–1.0 fractions) can be passed to Cloudinary without any intermediate math. The object detection, the image crop, and the voice guidance spatial calculation all share the same coordinate space.
+| Path | Purpose | Tags (examples) |
+|------|---------|-----------------|
+| `homepulse/snapshots/preview/{userId}/{key}` | Dev preview snapshot | `homepulse`, `preview`, `uid_…` |
+| `homepulse/reference/calibration` | Zone calibration reference | `homepulse`, `calibration` |
 
 ---
 
-## Two Image Roles: Stored vs. Transient
+## How images flow through the system {#system-flow}
 
-**Stored images (Cloudinary):** The initial alert capture — uploaded once, served permanently, included in emails, stored in MongoDB. These need to be archived for audit trail and caregiver reference.
+```
+vision_agent captures frame
+  → cloudinary_service.upload_and_crop()
+      → upload homepulse/raw/{event_id} [feat-upload, feat-tags, feat-public-id-layout]
+      → cropped_url + cropped_thumb_url via cloudinary_url [feat-cloudinary-url]
+  → VisionResult → monitor_agent
+      → MongoDB: raw_image_url, cropped_image_url, cropped_thumb_url
+      → /voice/push: image_url, image_thumb_url
+  → notification_agent / voice_input_agent
+      → email & alerts prefer thumb where appropriate
+```
 
-**Transient frames (base64 only):** The voice correction loop captures new frames every 3 seconds and sends them directly to Claude as base64. These are never uploaded to Cloudinary. They're guidance frames — diagnostically useful for a few seconds, not worth storing. This distinction keeps Cloudinary storage lean and API costs minimal.
+When a user marks an event **not** a real incident (`confirmed=false`), `learning_service` may call **`destroy`** on `homepulse/raw/{event_id}` if `CLOUDINARY_DESTROY_ON_FALSE_POSITIVE` is true ([feat-destroy](#feat-destroy)).
 
 ---
 
-## Why Cloudinary Specifically
+## What Cloudinary does that the code doesn’t {#platform-value}
 
-**`fl_relative` + `q_auto` together.** The combination of fractional coordinate crops (matching Claude's output directly) and context-aware quality encoding (handling webcam variability automatically) is not available in a standard image processing library or storage service. This combination solves two real problems in the HomePulse pipeline with no additional code.
+**Storage and CDN.** Images load from Cloudinary’s CDN in email clients and browsers; no dedicated image origin in FastAPI.
 
-**No image server to maintain.** Alert images need to be accessible from email clients, from Claude's API (via HTTPS URL), and from the dashboard — across different networks, devices, and formats. Cloudinary handles all of this from a single upload.
+**Transformation on demand.** One upload; crop and effects are applied per request. Changing the chain updates future deliveries without re-uploading.
 
-**Transformation chain as a URL.** The entire crop-sharpen-improve-encode pipeline is encoded in the Cloudinary URL. Changing the pipeline is a one-line code change, not a batch re-processing job.
+**Format negotiation.** `f_auto` serves WebP/AVIF where supported and falls back appropriately elsewhere.
+
+**Coordinate bridging.** `fl_relative` maps Claude’s 0–1 box directly to Cloudinary crop parameters — same space as spatial voice guidance.
+
+---
+
+## Stored vs transient frames {#stored-vs-transient}
+
+**Stored (Cloudinary):** Alert raw + derived URLs; preview snapshots; calibration reference. Tagged for organization and Media Library filtering.
+
+**Transient (base64 only):** Voice correction loop frames go straight to Claude; not uploaded.
+
+---
+
+## Environment variables {#env-vars}
+
+| Variable | Role |
+|----------|------|
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | SDK auth |
+| `CLOUDINARY_ALERT_THUMB_MAX_WIDTH` | Thumb `c_limit` width (px) |
+| `CLOUDINARY_NAMED_TRANSFORM_POSTCROP` | Optional named transform after crop (full chain only) |
+| `CLOUDINARY_DESTROY_ON_FALSE_POSITIVE` | Delete raw asset on false-positive confirm |
+
+---
+
+## Feature notes (anchors) {#feature-notes}
+
+### feat-upload {#feat-upload}
+
+Python SDK `cloudinary.uploader.upload` with in-memory JPEG bytes, fixed or generated `public_id`, `resource_type="image"`, and `overwrite` as needed.
+
+### feat-tags {#feat-tags}
+
+Alerts: `homepulse`, `alert`, `evt_{event_id}`, optional `uid_{user}`, `type_{event_type}`. Previews: `homepulse`, `preview`, `uid_{user}`. Calibration: `homepulse`, `calibration`.
+
+### feat-public-id-layout {#feat-public-id-layout}
+
+- `homepulse/raw/{event_id}` — anomaly frame (destroy target on false positive).
+- `homepulse/snapshots/preview/{userId}/{key}` — preview uploads.
+- `homepulse/reference/calibration` — single overwrite reference.
+
+### feat-secure-url {#feat-secure-url}
+
+Upload responses expose `secure_url` for the unmodified asset; we persist it as `raw_image_url` / snapshot `url`.
+
+### feat-cloudinary-url {#feat-cloudinary-url}
+
+`cloudinary.utils.cloudinary_url(public_id, transformation=[...])` builds HTTPS delivery URLs for `cropped_image_url` and `cropped_thumb_url` without a second stored object.
+
+### feat-crop-relative {#feat-crop-relative}
+
+When the zone dict has `pct: True`, crop uses fractional x, y, width, height with `flags: relative`.
+
+### feat-crop-absolute {#feat-crop-absolute}
+
+Calibration fallback: integer pixel x, y, width, height, no relative flag.
+
+### feat-named-transform {#feat-named-transform}
+
+If `CLOUDINARY_NAMED_TRANSFORM_POSTCROP` is non-empty, post-crop steps are replaced by `{"transformation": "<name>"}` as defined in the Cloudinary console.
+
+### feat-sharpen {#feat-sharpen}
+
+`{"effect": "sharpen:80"}` on webcam imagery for crisper evidence crops.
+
+### feat-improve {#feat-improve}
+
+`{"effect": "improve"}` — content-aware auto enhancement.
+
+### feat-q-auto {#feat-q-auto}
+
+`{"quality": "auto"}` — perceptual quality vs size.
+
+### feat-f-auto {#feat-f-auto}
+
+`{"fetch_format": "auto"}` — modern formats where supported.
+
+### feat-dpr-auto {#feat-dpr-auto}
+
+`{"dpr": "auto"}` on caregiver-facing full and thumb chains for HiDPI displays.
+
+### feat-c-limit {#feat-c-limit}
+
+After crop and sharpen, `{"width": W, "crop": "limit"}` caps display width while preserving aspect ratio.
+
+### feat-destroy {#feat-destroy}
+
+`cloudinary.uploader.destroy(public_id, resource_type="image", invalidate=True)` removes the raw alert asset when a false positive is confirmed (config-gated).
+
+---
+
+## Why Cloudinary for HomePulse {#why-cloudinary}
+
+**`fl_relative` + `q_auto` + `f_auto` + `dpr_auto`** — Fractional crops aligned with vision output, plus automatic quality, format, and DPR without custom image servers.
+
+**URL-encoded pipelines** — The transformation chain lives in the delivery URL; ops can adjust named transforms in the console for the full-crop path when using that mode.
+
+**Tags + destroy** — Media Library hygiene and optional cleanup when users correct the model.

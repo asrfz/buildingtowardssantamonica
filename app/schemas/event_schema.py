@@ -29,6 +29,6 @@ def build_event_doc(
         "triage_reason": None,
         "triage_confidence": None,
         "cropped_image_url": None,
+        "cropped_thumb_url": None,
         "raw_image_url": None,
-        "context_expanded_image_url": None,
     }

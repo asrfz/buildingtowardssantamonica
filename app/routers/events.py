@@ -38,6 +38,7 @@ async def list_camera_snapshots(user_id: str, limit: int = Query(48, ge=1, le=10
                 "snapshot_id": str(d["_id"]),
                 "url": d.get("url", ""),
                 "cropped_url": d.get("cropped_url", ""),
+                "cropped_thumb_url": d.get("cropped_thumb_url", ""),
                 "public_id": d.get("public_id", ""),
                 "source": d.get("source", ""),
                 "event_id": str(eid) if eid else None,

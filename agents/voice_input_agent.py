@@ -308,7 +308,8 @@ async def _try_send_pending_escalation_email(ctx: Context, user_id: str) -> bool
     cancel_window = int(event.get("pending_email_cancel_window_seconds", settings.CANCEL_WINDOW_SECONDS))
     event_id = str(event["_id"])
     image_url = (
-        event.get("cropped_image_url")
+        event.get("cropped_thumb_url")
+        or event.get("cropped_image_url")
         or event.get("raw_image_url")
         or ""
     )

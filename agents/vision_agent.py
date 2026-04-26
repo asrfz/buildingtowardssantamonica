@@ -157,6 +157,7 @@ async def capture_and_upload(ctx: Context, sender: str, msg: TriageResult) -> No
                 zone,
                 raw_url=existing.get("url") or "",
                 cropped_url=existing.get("cropped_url") or "",
+                cropped_thumb_url=existing.get("cropped_thumb_url") or "",
                 initial_context_message=context_msg,
             )
         else:
@@ -169,7 +170,13 @@ async def capture_and_upload(ctx: Context, sender: str, msg: TriageResult) -> No
 
     ctx.logger.info("[3b/5] VISION  upload slot acquired — uploading to Cloudinary")
     try:
-        urls = await upload_and_crop_from_b64(image_b64, msg.event_id, zone)
+        urls = await upload_and_crop_from_b64(
+            image_b64,
+            msg.event_id,
+            zone,
+            user_id=msg.user_id,
+            event_type=msg.event_type,
+        )
         ctx.logger.info(f"[3b/5] VISION  Cloudinary upload done  cropped={urls['cropped_url'][:60]}...")
     except Exception as e:
         ctx.logger.error(f"[3b/5] VISION  Cloudinary upload failed: {e}")
@@ -183,6 +190,7 @@ async def capture_and_upload(ctx: Context, sender: str, msg: TriageResult) -> No
             user_id=msg.user_id,
             url=urls["raw_url"],
             cropped_url=urls.get("cropped_url") or "",
+            cropped_thumb_url=urls.get("cropped_thumb_url") or "",
             public_id=str(urls.get("public_id") or f"homepulse/raw/{msg.event_id}"),
             width=urls.get("width"),
             height=urls.get("height"),
@@ -201,6 +209,7 @@ async def capture_and_upload(ctx: Context, sender: str, msg: TriageResult) -> No
         zone,
         raw_url=urls["raw_url"],
         cropped_url=urls["cropped_url"],
+        cropped_thumb_url=urls.get("cropped_thumb_url") or "",
         initial_context_message=context_msg,
     )
 
@@ -212,6 +221,7 @@ async def _dispatch_vision_results(
     *,
     raw_url: str,
     cropped_url: str,
+    cropped_thumb_url: str = "",
     initial_context_message: str = "",
 ) -> None:
     if MONITOR_AGENT_ADDRESS:
@@ -222,6 +232,7 @@ async def _dispatch_vision_results(
                 user_id=msg.user_id,
                 raw_url=raw_url,
                 cropped_url=cropped_url,
+                cropped_thumb_url=cropped_thumb_url or "",
                 zone_name=zone.get("name", ""),
                 timestamp_iso=datetime.utcnow().isoformat(),
                 spatial_crop_trusted=zone.get("visual_verified") is True,
@@ -262,6 +273,7 @@ async def _send_empty(ctx: Context, msg: TriageResult) -> None:
             user_id=msg.user_id,
             raw_url="",
             cropped_url="",
+            cropped_thumb_url="",
             zone_name="",
             timestamp_iso=datetime.utcnow().isoformat(),
         ),

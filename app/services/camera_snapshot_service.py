@@ -25,6 +25,7 @@ async def record_camera_snapshot(
     user_id: str,
     url: str,
     cropped_url: str = "",
+    cropped_thumb_url: str = "",
     public_id: str = "",
     width: int | None = None,
     height: int | None = None,
@@ -45,6 +46,7 @@ async def record_camera_snapshot(
         "user_id": oid,
         "url": url,
         "cropped_url": cropped_url or "",
+        "cropped_thumb_url": cropped_thumb_url or "",
         "public_id": public_id or "",
         "width": width,
         "height": height,
@@ -86,6 +88,7 @@ async def find_snapshot_for_event(
     return {
         "url": doc.get("url", ""),
         "cropped_url": doc.get("cropped_url", ""),
+        "cropped_thumb_url": doc.get("cropped_thumb_url", ""),
         "public_id": doc.get("public_id", ""),
         "width": doc.get("width"),
         "height": doc.get("height"),

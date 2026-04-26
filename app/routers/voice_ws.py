@@ -414,7 +414,7 @@ _HTML = """<!DOCTYPE html>
         } else if (msg.type === 'alert') {
           const d = msg.data || {};
           const sev = (d.severity || 'MEDIUM').toLowerCase();
-          addAlertCard(d.label || msg.text, sev, d.recommended_action || '', d.image_url || '');
+          addAlertCard(d.label || msg.text, sev, d.recommended_action || '', (d.image_thumb_url || d.image_url || ''));
         }
       };
 

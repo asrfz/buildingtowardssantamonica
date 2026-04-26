@@ -3,23 +3,20 @@ cloudinary_service — Handles all Cloudinary image upload and transformation
 for HomePulse alert images.
 
 Encoding pipeline for every alert image:
-    1. Raw JPEG upload  →  stored as homepulse/raw/{event_id}
-    2. c_crop           →  cut to the exact zone bounding box
-                           (fl_relative when coords are fractional 0–1,
-                            pixel coords when sourced from MongoDB zones)
-    3. e_sharpen:80     →  compensate for webcam softness / motion blur
-    4. e_improve        →  Cloudinary's content-aware auto-enhancement
-    5. q_auto, f_auto   →  context-aware quality + modern formats (WebP/AVIF)
+    1. Raw JPEG upload  →  stored as homepulse/raw/{event_id} (tags: homepulse, evt_…, optional uid/type)
+    2. c_crop           →  zone bounding box (fl_relative when coords are 0–1)
+    3. Post-crop        →  either CLOUDINARY_NAMED_TRANSFORM_POSTCROP or:
+                           e_sharpen:80 → e_improve → q_auto → f_auto → dpr_auto
+    4. Thumbnail URL    →  same crop + inline sharpen + c_limit,w_MAX + improve + q_auto + f_auto + dpr_auto
+                           (inline thumb chain even when primary uses a named transform)
 
-Why q_auto matters here:
-    Webcam frames vary wildly in quality — bright kitchen vs dim room, fast
-    motion vs static scene. q_auto adapts per-image so alert thumbnails in
-    emails are always crisp without wasting bandwidth on noisy frames.
+See pitch/cloudinary.md for the feature checklist (#cloudinary-feature-index).
 """
 
 import asyncio
 import base64
 import logging
+import re
 import cloudinary
 import cloudinary.uploader
 import cloudinary.utils
@@ -36,6 +33,21 @@ def _configure() -> None:
         api_key=settings.CLOUDINARY_API_KEY,
         api_secret=settings.CLOUDINARY_API_SECRET,
     )
+
+
+def _sanitize_tag_part(s: str, max_len: int = 48) -> str:
+    """Cloudinary tags: alphanumeric, hyphen, underscore; collapse junk."""
+    t = re.sub(r"[^a-zA-Z0-9_-]+", "_", (s or "").strip())[:max_len]
+    return t or "unknown"
+
+
+def _upload_tags(event_id: str, user_id: str = "", event_type: str = "") -> str:
+    parts = ["homepulse", "alert", f"evt_{_sanitize_tag_part(event_id, 32)}"]
+    if user_id:
+        parts.append(f"uid_{_sanitize_tag_part(user_id, 24)}")
+    if event_type:
+        parts.append(f"type_{_sanitize_tag_part(event_type, 20)}")
+    return ",".join(parts)
 
 
 def _build_crop_transform(zone: dict) -> dict:
@@ -65,91 +77,190 @@ def _build_crop_transform(zone: dict) -> dict:
     }
 
 
-def _delivery_optimize_tail() -> list[dict]:
-    """Shared tail: enhancement + auto quality + auto format."""
-    return [
+def _delivery_optimize_tail(*, with_dpr: bool = True) -> list[dict]:
+    """Enhancement + auto quality + auto format (+ device pixel ratio for caregiver-facing URLs)."""
+    tail: list[dict] = [
         {"effect": "improve"},
         {"quality": "auto"},
         {"fetch_format": "auto"},
     ]
+    if with_dpr:
+        tail.append({"dpr": "auto"})
+    return tail
 
 
-def _crop_transformation_chain(zone: dict) -> list[dict]:
+def _postcrop_effects_named_or_inline() -> list[dict]:
+    name = (settings.CLOUDINARY_NAMED_TRANSFORM_POSTCROP or "").strip()
+    if name:
+        return [{"transformation": name}]
     return [
-        _build_crop_transform(zone),
         {"effect": "sharpen:80"},
-        *_delivery_optimize_tail(),
+        *_delivery_optimize_tail(with_dpr=True),
     ]
 
 
-def _upload_and_crop_sync(frame: np.ndarray, event_id: str, zone: dict) -> dict:
+def _crop_transformation_chain_alert_full(zone: dict) -> list[dict]:
+    return [
+        _build_crop_transform(zone),
+        *_postcrop_effects_named_or_inline(),
+    ]
+
+
+def _crop_transformation_chain_alert_thumb(zone: dict) -> list[dict]:
+    """Smaller bytes for email and gallery tiles; always uses inline post-limit pipeline."""
+    w = max(64, min(2048, int(settings.CLOUDINARY_ALERT_THUMB_MAX_WIDTH)))
+    return [
+        _build_crop_transform(zone),
+        {"effect": "sharpen:80"},
+        {"width": w, "crop": "limit"},
+        *_delivery_optimize_tail(with_dpr=True),
+    ]
+
+
+def _upload_sync(
+    image_bytes: bytes,
+    event_id: str,
+    zone: dict,
+    *,
+    user_id: str = "",
+    event_type: str = "",
+) -> dict:
     _configure()
-
-    _, buffer = cv2.imencode(".jpg", frame)
-    raw = cloudinary.uploader.upload(
-        buffer.tobytes(),
-        public_id=f"homepulse/raw/{event_id}",
-        resource_type="image",
-        overwrite=True,
-    )
-
-    transformation = _crop_transformation_chain(zone)
-
-    cropped_url = cloudinary.utils.cloudinary_url(
-        f"homepulse/raw/{event_id}",
-        transformation=transformation,
-    )[0]
-
-    pid = raw.get("public_id", f"homepulse/raw/{event_id}")
-
-    logger.info(f"Cloudinary upload complete for event {event_id} — zone={zone.get('name', '?')}")
-    return {
-        "raw_url": raw["secure_url"],
-        "cropped_url": cropped_url,
-        "width": raw.get("width"),
-        "height": raw.get("height"),
-        "public_id": pid,
-    }
-
-
-def _upload_and_crop_from_b64_sync(image_b64: str, event_id: str, zone: dict) -> dict:
-    """Upload a base64 JPEG from the browser (no OpenCV needed)."""
-    _configure()
-    image_bytes = base64.b64decode(image_b64)
+    tags = _upload_tags(event_id, user_id, event_type)
     raw = cloudinary.uploader.upload(
         image_bytes,
         public_id=f"homepulse/raw/{event_id}",
         resource_type="image",
         overwrite=True,
+        tags=tags,
     )
-    transformation = _crop_transformation_chain(zone)
-    cropped_url = cloudinary.utils.cloudinary_url(
-        f"homepulse/raw/{event_id}",
-        transformation=transformation,
-    )[0]
-    pid = raw.get("public_id", f"homepulse/raw/{event_id}")
-    logger.info(f"Cloudinary upload complete for event {event_id} — zone={zone.get('name', '?')}")
+    pid = f"homepulse/raw/{event_id}"
+    chain_full = _crop_transformation_chain_alert_full(zone)
+    chain_thumb = _crop_transformation_chain_alert_thumb(zone)
+
+    cropped_url = cloudinary.utils.cloudinary_url(pid, transformation=chain_full)[0]
+    cropped_thumb_url = cloudinary.utils.cloudinary_url(pid, transformation=chain_thumb)[0]
+
+    logger.info(
+        "Cloudinary upload complete for event %s — zone=%s tags=%s",
+        event_id,
+        zone.get("name", "?"),
+        tags,
+    )
     return {
         "raw_url": raw["secure_url"],
         "cropped_url": cropped_url,
+        "cropped_thumb_url": cropped_thumb_url,
         "width": raw.get("width"),
         "height": raw.get("height"),
-        "public_id": pid,
+        "public_id": raw.get("public_id", pid),
     }
 
 
-async def upload_and_crop_from_b64(image_b64: str, event_id: str, zone: dict) -> dict:
+def _upload_and_crop_sync(
+    frame: np.ndarray,
+    event_id: str,
+    zone: dict,
+    *,
+    user_id: str = "",
+    event_type: str = "",
+) -> dict:
+    _, buffer = cv2.imencode(".jpg", frame)
+    return _upload_sync(
+        buffer.tobytes(),
+        event_id,
+        zone,
+        user_id=user_id,
+        event_type=event_type,
+    )
+
+
+def _upload_and_crop_from_b64_sync(
+    image_b64: str,
+    event_id: str,
+    zone: dict,
+    *,
+    user_id: str = "",
+    event_type: str = "",
+) -> dict:
+    image_bytes = base64.b64decode(image_b64)
+    return _upload_sync(
+        image_bytes,
+        event_id,
+        zone,
+        user_id=user_id,
+        event_type=event_type,
+    )
+
+
+def destroy_event_raw_image_sync(event_id: str) -> bool:
+    """
+    Remove the alert raw asset homepulse/raw/{event_id} from Cloudinary.
+    Returns True if API reports ok or not_found (already gone).
+    """
+    if not settings.CLOUDINARY_CLOUD_NAME or not settings.CLOUDINARY_API_KEY:
+        return False
+    _configure()
+    public_id = f"homepulse/raw/{event_id}"
+    try:
+        res = cloudinary.uploader.destroy(public_id, resource_type="image", invalidate=True)
+        result = (res.get("result") or "").lower()
+        ok = result in ("ok", "not found")
+        if ok:
+            logger.info("Cloudinary destroy %s → %s", public_id, result)
+        else:
+            logger.warning("Cloudinary destroy %s → %s", public_id, res)
+        return ok
+    except Exception as exc:
+        logger.warning("Cloudinary destroy failed for %s: %s", public_id, exc)
+        return False
+
+
+async def destroy_event_raw_image(event_id: str) -> bool:
+    return await asyncio.to_thread(destroy_event_raw_image_sync, event_id)
+
+
+async def upload_and_crop_from_b64(
+    image_b64: str,
+    event_id: str,
+    zone: dict,
+    *,
+    user_id: str = "",
+    event_type: str = "",
+) -> dict:
     """Async wrapper for the browser-frame upload path."""
-    return await asyncio.to_thread(_upload_and_crop_from_b64_sync, image_b64, event_id, zone)
+    return await asyncio.to_thread(
+        _upload_and_crop_from_b64_sync,
+        image_b64,
+        event_id,
+        zone,
+        user_id=user_id,
+        event_type=event_type,
+    )
 
 
-async def upload_and_crop(frame: np.ndarray, event_id: str, zone: dict) -> dict:
+async def upload_and_crop(
+    frame: np.ndarray,
+    event_id: str,
+    zone: dict,
+    *,
+    user_id: str = "",
+    event_type: str = "",
+) -> dict:
     """
     Upload a webcam frame to Cloudinary and return:
-      raw_url     : full unmodified frame (for audit / monitor_agent context)
-      cropped_url : zone-cropped + encoded image (for alert emails + voice agent)
+      raw_url           : full unmodified frame (audit / monitor_agent)
+      cropped_url       : zone crop + caregiver delivery chain (Claude reasoning, UI, TTS context)
+      cropped_thumb_url : same crop, width-limited + same optimizations (email, dense lists)
     """
-    return await asyncio.to_thread(_upload_and_crop_sync, frame, event_id, zone)
+    return await asyncio.to_thread(
+        _upload_and_crop_sync,
+        frame,
+        event_id,
+        zone,
+        user_id=user_id,
+        event_type=event_type,
+    )
 
 
 def frame_to_base64(frame: np.ndarray) -> str:

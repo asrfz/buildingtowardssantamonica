@@ -233,6 +233,7 @@ async def bureau_preview_snapshot(
             public_id=public_id,
             resource_type="image",
             overwrite=False,
+            tags=f"homepulse,preview,uid_{uid}",
         )
     except Exception as e:
         if slot_consumed:
@@ -295,6 +296,7 @@ async def capture_reference_frame() -> dict:
         public_id="homepulse/reference/calibration",
         resource_type="image",
         overwrite=True,
+        tags="homepulse,calibration",
     )
     url = result.get("secure_url", "")
     logger.info(

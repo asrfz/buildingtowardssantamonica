@@ -124,6 +124,7 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
                     "suggested_service": suggested_service,
                     "raw_image_url": vision.raw_url,
                     "cropped_image_url": vision.cropped_url,
+                    "cropped_thumb_url": getattr(vision, "cropped_thumb_url", "") or "",
                     "monitor_reasoning": decision.get("reasoning", ""),
                     "status": "monitored",
                 },
@@ -157,6 +158,7 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
                         "severity": severity,
                         "recommended_action": recommended_action,
                         "image_url": vision.cropped_url or vision.raw_url or "",
+                        "image_thumb_url": getattr(vision, "cropped_thumb_url", "") or "",
                     },
                 })
         except Exception as e:

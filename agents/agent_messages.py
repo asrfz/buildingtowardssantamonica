@@ -69,6 +69,7 @@ class VisionResult(Model):
     user_id: str
     raw_url: str
     cropped_url: str
+    cropped_thumb_url: str = ""
     zone_name: str
     timestamp_iso: str
     # False when zone came from Mongo calibration map, not Claude object detection in-frame.
