@@ -381,7 +381,7 @@ export default function App() {
             </section>
           )}
 
-          <section className="card">
+          <section className="card camera-card">
             <h2>
               Camera Feed
               {cameraReady && (
@@ -413,13 +413,15 @@ export default function App() {
                 Retry camera
               </button>
             </div>
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              style={{ width: '100%', borderRadius: 8, background: '#0f172a', display: 'block', marginTop: 8 }}
-            />
+            <div className="camera-stage">
+              <video
+                ref={videoRef}
+                className="camera-feed-video"
+                autoPlay
+                playsInline
+                muted
+              />
+            </div>
           </section>
 
           <section className="card">
