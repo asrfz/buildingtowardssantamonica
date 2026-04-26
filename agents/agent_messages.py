@@ -74,6 +74,12 @@ class VisionResult(Model):
     timestamp_iso: str
     # False when zone came from Mongo calibration map, not Claude object detection in-frame.
     spatial_crop_trusted: bool = True
+    # Zone applied to raw frame for Cloudinary c_crop (same space as VoiceAlert bbox when pct).
+    crop_x: float = 0.0
+    crop_y: float = 0.0
+    crop_w: float = 0.0
+    crop_h: float = 0.0
+    crop_fractional: bool = True
 
 
 class MonitorDecision(Model):

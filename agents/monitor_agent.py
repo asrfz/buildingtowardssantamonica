@@ -112,22 +112,37 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
 
     # Update event in MongoDB with full reasoning
     db = get_db()
+    cw = float(getattr(vision, "crop_w", 0) or 0)
+    ch = float(getattr(vision, "crop_h", 0) or 0)
+    vision_crop_zone = None
+    if cw > 0 and ch > 0:
+        vision_crop_zone = {
+            "x": float(getattr(vision, "crop_x", 0)),
+            "y": float(getattr(vision, "crop_y", 0)),
+            "w": cw,
+            "h": ch,
+            "fractional": bool(getattr(vision, "crop_fractional", True)),
+            "zone_name": vision.zone_name or "",
+        }
+    event_set = {
+        "event_type": confirmed_type,
+        "event_label": label_for_event_type(confirmed_type),
+        "severity": severity,
+        "recommended_action": recommended_action,
+        "suggested_service": suggested_service,
+        "raw_image_url": vision.raw_url,
+        "cropped_image_url": vision.cropped_url,
+        "cropped_thumb_url": getattr(vision, "cropped_thumb_url", "") or "",
+        "monitor_reasoning": decision.get("reasoning", ""),
+        "status": "monitored",
+    }
+    if vision_crop_zone:
+        event_set["vision_crop_zone"] = vision_crop_zone
     try:
         await db.events.update_one(
             {"_id": ObjectId(event_id)},
             {
-                "$set": {
-                    "event_type": confirmed_type,
-                    "event_label": label_for_event_type(confirmed_type),
-                    "severity": severity,
-                    "recommended_action": recommended_action,
-                    "suggested_service": suggested_service,
-                    "raw_image_url": vision.raw_url,
-                    "cropped_image_url": vision.cropped_url,
-                    "cropped_thumb_url": getattr(vision, "cropped_thumb_url", "") or "",
-                    "monitor_reasoning": decision.get("reasoning", ""),
-                    "status": "monitored",
-                },
+                "$set": event_set,
                 "$unset": {"context_expanded_image_url": ""},
             },
         )
@@ -148,18 +163,22 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 push_url = f"{settings.HOMEPULSE_API_BASE.rstrip('/')}/voice/push"
+                push_data = {
+                    "event_id": event_id,
+                    "event_type": confirmed_type,
+                    "label": event_label,
+                    "severity": severity,
+                    "recommended_action": recommended_action,
+                    "image_url": vision.cropped_url or vision.raw_url or "",
+                    "image_thumb_url": getattr(vision, "cropped_thumb_url", "") or "",
+                    "raw_image_url": vision.raw_url or "",
+                }
+                if vision_crop_zone:
+                    push_data["vision_crop_zone"] = vision_crop_zone
                 await client.post(push_url, json={
                     "type": "alert",
                     "text": alert_text,
-                    "data": {
-                        "event_id": event_id,
-                        "event_type": confirmed_type,
-                        "label": event_label,
-                        "severity": severity,
-                        "recommended_action": recommended_action,
-                        "image_url": vision.cropped_url or vision.raw_url or "",
-                        "image_thumb_url": getattr(vision, "cropped_thumb_url", "") or "",
-                    },
+                    "data": push_data,
                 })
         except Exception as e:
             ctx.logger.debug(f"WebSocket alert push failed (FastAPI may not be running): {e}")

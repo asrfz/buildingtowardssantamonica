@@ -24,7 +24,11 @@ from app.database import connect_db, get_db
 from app.services.vision_service import get_zone_dynamic_or_fallback_b64
 from app.services.claude_service import describe_unverified_alert_scene
 from app.services.cloudinary_service import upload_and_crop_from_b64
-from app.services.camera_snapshot_service import find_snapshot_for_event, record_camera_snapshot
+from app.services.camera_snapshot_service import (
+    crop_zone_document,
+    find_snapshot_for_event,
+    record_camera_snapshot,
+)
 from app.services.snapshot_cloudinary_gate import refund_upload_slot, try_consume_upload_slot
 from agents.agent_messages import (
     TriageResult, VisionResult, VoiceAlert,
@@ -197,6 +201,7 @@ async def capture_and_upload(ctx: Context, sender: str, msg: TriageResult) -> No
             source="vision",
             event_id=msg.event_id,
             event_type=msg.event_type,
+            vision_crop_zone=crop_zone_document(zone),
         )
         if sid:
             ctx.logger.info(f"[3b/5] VISION  snapshot row in Mongo camera_snapshots id={sid[:8]}…")
@@ -236,6 +241,11 @@ async def _dispatch_vision_results(
                 zone_name=zone.get("name", ""),
                 timestamp_iso=datetime.utcnow().isoformat(),
                 spatial_crop_trusted=zone.get("visual_verified") is True,
+                crop_x=float(zone.get("x", 0)),
+                crop_y=float(zone.get("y", 0)),
+                crop_w=float(zone.get("w", 0)),
+                crop_h=float(zone.get("h", 0)),
+                crop_fractional=bool(zone.get("pct")),
             ),
         )
     else:
@@ -276,6 +286,11 @@ async def _send_empty(ctx: Context, msg: TriageResult) -> None:
             cropped_thumb_url="",
             zone_name="",
             timestamp_iso=datetime.utcnow().isoformat(),
+            crop_x=0.0,
+            crop_y=0.0,
+            crop_w=0.0,
+            crop_h=0.0,
+            crop_fractional=True,
         ),
     )
 

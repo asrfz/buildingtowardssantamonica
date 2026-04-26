@@ -33,6 +33,7 @@ async def list_camera_snapshots(user_id: str, limit: int = Query(48, ge=1, le=10
     snapshots = []
     for d in docs:
         eid = d.get("event_id")
+        z = d.get("vision_crop_zone")
         snapshots.append(
             {
                 "snapshot_id": str(d["_id"]),
@@ -45,6 +46,7 @@ async def list_camera_snapshots(user_id: str, limit: int = Query(48, ge=1, le=10
                 "event_type": d.get("event_type", ""),
                 "width": d.get("width"),
                 "height": d.get("height"),
+                "vision_crop_zone": z if isinstance(z, dict) else None,
                 "created_at": d["created_at"].isoformat() if d.get("created_at") else "",
             }
         )

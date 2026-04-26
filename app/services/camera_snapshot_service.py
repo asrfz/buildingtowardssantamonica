@@ -19,6 +19,24 @@ logger = logging.getLogger(__name__)
 CAMERA_SNAPSHOTS_COLL = "camera_snapshots"
 
 
+def crop_zone_document(zone: dict | None) -> dict | None:
+    """Serialize vision/calibration zone for Mongo + API (fractional or pixel crop rect)."""
+    if not zone:
+        return None
+    w = float(zone.get("w") or 0)
+    h = float(zone.get("h") or 0)
+    if w <= 0 or h <= 0:
+        return None
+    return {
+        "x": float(zone.get("x", 0)),
+        "y": float(zone.get("y", 0)),
+        "w": w,
+        "h": h,
+        "fractional": bool(zone.get("pct")),
+        "zone_name": str(zone.get("name") or ""),
+    }
+
+
 async def record_camera_snapshot(
     db: AsyncIOMotorDatabase,
     *,
@@ -32,6 +50,7 @@ async def record_camera_snapshot(
     source: str,
     event_id: str | None = None,
     event_type: str = "",
+    vision_crop_zone: dict | None = None,
 ) -> str | None:
     """
     Insert one snapshot document. Returns inserted_id as str, or None if user_id invalid.
@@ -61,6 +80,8 @@ async def record_camera_snapshot(
             doc["event_id"] = None
     else:
         doc["event_id"] = None
+    if vision_crop_zone:
+        doc["vision_crop_zone"] = vision_crop_zone
 
     result = await db[CAMERA_SNAPSHOTS_COLL].insert_one(doc)
     return str(result.inserted_id)
@@ -92,4 +113,5 @@ async def find_snapshot_for_event(
         "public_id": doc.get("public_id", ""),
         "width": doc.get("width"),
         "height": doc.get("height"),
+        "vision_crop_zone": doc.get("vision_crop_zone"),
     }

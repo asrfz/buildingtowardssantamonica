@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CloudinaryPlayground } from './components/CloudinaryPlayground'
+import { CloudinaryDeliveryImage } from './components/CloudinaryDeliveryImage'
+import { VisionCropZoneFrame } from './components/VisionCropZoneFrame'
 import { apiBase, apiJson } from './lib/api'
+import { parseVisionCropZone, type VisionCropZone } from './lib/visionCropZone'
 import { PRESETS, basePayload, simulateBody, FORCE_LOUD_NOISE, type ForceTriage } from './lib/payloads'
 
 const USER_STORAGE = 'homepulse_dev_user_id'
@@ -17,7 +20,38 @@ type LiveAlert = {
   image_url?: string
   /** Width-limited crop for cards / email */
   image_thumb_url?: string
+  raw_image_url?: string
+  vision_crop_zone?: VisionCropZone | null
   time: string
+}
+
+function FullFrameCropDetails({
+  rawUrl,
+  zone,
+  summaryColor,
+}: {
+  rawUrl: string
+  zone: VisionCropZone
+  summaryColor?: string
+}) {
+  return (
+    <details style={{ marginTop: 8 }}>
+      <summary
+        style={{
+          cursor: 'pointer',
+          fontSize: '0.72rem',
+          fontWeight: 600,
+          color: summaryColor ?? '#475569',
+          listStyle: 'none',
+        }}
+      >
+        Full frame · crop region
+      </summary>
+      <div style={{ marginTop: 8 }}>
+        <VisionCropZoneFrame src={rawUrl} zone={zone} maxHeight={200} />
+      </div>
+    </details>
+  )
 }
 
 const SEV_COLORS: Record<string, { border: string; bg: string; badge: string; text: string }> = {
@@ -54,6 +88,7 @@ export default function App() {
       cropped_image_url: string | null
       cropped_thumb_url: string | null
       raw_image_url: string | null
+      vision_crop_zone: VisionCropZone | null
       detected_at: string
     }[]
   >([])
@@ -69,6 +104,7 @@ export default function App() {
       event_id: string | null
       event_type: string
       created_at: string
+      vision_crop_zone?: VisionCropZone | null
     }[]
   >([])
   const [snapshotsLoading, setSnapshotsLoading] = useState(false)
@@ -137,6 +173,7 @@ export default function App() {
           const crop = (e.cropped_image_url as string | undefined) || null
           const cthumb = (e.cropped_thumb_url as string | undefined)?.trim() || null
           const raw = (e.raw_image_url as string | undefined) || null
+          const vcz = parseVisionCropZone(e.vision_crop_zone)
           return {
             event_id: id,
             event_type: String(e.event_type ?? ''),
@@ -144,6 +181,7 @@ export default function App() {
             cropped_image_url: crop,
             cropped_thumb_url: cthumb,
             raw_image_url: raw,
+            vision_crop_zone: vcz,
             detected_at: e.detected_at != null ? String(e.detected_at) : '',
           }
         })
@@ -196,9 +234,15 @@ export default function App() {
           event_id: string | null
           event_type: string
           created_at: string
+          vision_crop_zone?: unknown
         }[]
       }
-      setSnapshotGallery(j.snapshots ?? [])
+      setSnapshotGallery(
+        (j.snapshots ?? []).map((s) => ({
+          ...s,
+          vision_crop_zone: parseVisionCropZone(s.vision_crop_zone),
+        })),
+      )
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
         setSnapshotsError('Request timed out — is uvicorn on port 8000?')
@@ -256,15 +300,21 @@ export default function App() {
             text?: string
           }
           if (msg.type === 'alert' && msg.data) {
-            const eventId = typeof msg.data.event_id === 'string' ? msg.data.event_id : ''
-            const label = String(msg.data.label || msg.data.event_type || 'Alert')
-            const severity = String(msg.data.severity || 'MEDIUM').toUpperCase()
-            const recommended = String(msg.data.recommended_action || msg.text || '')
-            const imageUrl = msg.data.image_url || undefined
+            const data = msg.data as Record<string, unknown>
+            const eventId = typeof data.event_id === 'string' ? data.event_id : ''
+            const label = String(data.label || data.event_type || 'Alert')
+            const severity = String(data.severity || 'MEDIUM').toUpperCase()
+            const recommended = String(data.recommended_action || msg.text || '')
+            const imageUrl = typeof data.image_url === 'string' ? data.image_url : undefined
             const imageThumb =
-              typeof msg.data.image_thumb_url === 'string' && msg.data.image_thumb_url.trim()
-                ? msg.data.image_thumb_url.trim()
+              typeof data.image_thumb_url === 'string' && data.image_thumb_url.trim()
+                ? data.image_thumb_url.trim()
                 : undefined
+            const rawImg =
+              typeof data.raw_image_url === 'string' && data.raw_image_url.trim()
+                ? data.raw_image_url.trim()
+                : undefined
+            const vcz = parseVisionCropZone(data.vision_crop_zone)
             const time = new Date().toLocaleTimeString()
             setAlerts((prev) => {
               const id = eventId || `anon-${label}-${recommended.slice(0, 40)}`
@@ -275,6 +325,8 @@ export default function App() {
                 recommended_action: recommended,
                 image_url: imageUrl,
                 image_thumb_url: imageThumb,
+                raw_image_url: rawImg,
+                vision_crop_zone: vcz,
                 time,
               }
               const without = prev.filter((a) => a.id !== id)
@@ -468,12 +520,19 @@ export default function App() {
                       </div>
                       <p style={{ margin: 0, fontSize: '0.875rem', color: '#475569' }}>{alert.recommended_action}</p>
                       {(alert.image_thumb_url || alert.image_url) && (
-                        <img
-                          src={alert.image_thumb_url || alert.image_url}
-                          alt={alert.label}
-                          style={{ marginTop: 8, maxWidth: '100%', maxHeight: 160, borderRadius: 6, objectFit: 'cover' }}
-                        />
+                        <div style={{ marginTop: 8, maxWidth: '100%', borderRadius: 6, overflow: 'hidden' }}>
+                          <CloudinaryDeliveryImage
+                            src={alert.image_thumb_url || alert.image_url || ''}
+                            alt={alert.label}
+                            href={alert.image_url || alert.image_thumb_url}
+                            maxChips={5}
+                            imgStyle={{ maxHeight: 160, objectFit: 'cover' }}
+                          />
+                        </div>
                       )}
+                      {alert.raw_image_url && alert.vision_crop_zone ? (
+                        <FullFrameCropDetails rawUrl={alert.raw_image_url} zone={alert.vision_crop_zone} />
+                      ) : null}
                     </div>
                   )
                 })}
@@ -545,7 +604,9 @@ export default function App() {
             <p className="hint">
               After triage + vision, events get <code>cropped_image_url</code> (full delivery),{' '}
               <code>cropped_thumb_url</code> (width-limited for lists/email), and <code>raw_image_url</code>. Grid tiles prefer
-              the thumb. Loaded from <code>GET /events/&#123;userId&#125;</code>.
+              the thumb. Each tile <strong>decodes the delivery URL</strong> and shows compact transformation chips. Expand{' '}
+              <strong>Full frame · crop region</strong> on events after monitor runs (stores <code>vision_crop_zone</code> in
+              Mongo) to see the raw Cloudinary frame with the crop rectangle. Loaded from <code>GET /events/&#123;userId&#125;</code>.
             </p>
             {clipsError ? <p className="warn">{clipsError}</p> : null}
             <div className="btn-row" style={{ marginBottom: 8 }}>
@@ -582,13 +643,14 @@ export default function App() {
                       }}
                     >
                       {src ? (
-                        <a href={fullHref} target="_blank" rel="noreferrer">
-                          <img
-                            src={src}
-                            alt={c.event_type}
-                            style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
-                          />
-                        </a>
+                        <CloudinaryDeliveryImage
+                          src={src}
+                          alt={c.event_type}
+                          href={fullHref}
+                          maxChips={5}
+                          minHeight={140}
+                          imgStyle={{ width: '100%', height: 140, objectFit: 'cover' }}
+                        />
                       ) : null}
                       <figcaption style={{ padding: '8px 10px', fontSize: '0.75rem', color: sev.text }}>
                         <strong>{c.event_type}</strong> · {c.severity}
@@ -602,6 +664,13 @@ export default function App() {
                             {c.detected_at}
                           </>
                         ) : null}
+                        {c.raw_image_url && c.vision_crop_zone ? (
+                          <FullFrameCropDetails
+                            rawUrl={c.raw_image_url}
+                            zone={c.vision_crop_zone}
+                            summaryColor={sev.text}
+                          />
+                        ) : null}
                       </figcaption>
                     </figure>
                   )
@@ -614,7 +683,8 @@ export default function App() {
             <h2>Snapshot gallery (MongoDB + Cloudinary)</h2>
             <p className="hint">
               Stored in <code>camera_snapshots</code> and listed via <code>GET /events/snapshots/&#123;userId&#125;</code>.
-              Vision pipeline rows and manual <strong>Save snapshot to gallery</strong> both appear here.
+              Vision rows may include <strong>Full frame · crop region</strong> when <code>vision_crop_zone</code> was saved.
+              Manual preview saves have no crop overlay.
             </p>
             {snapshotsError ? <p className="warn">{snapshotsError}</p> : null}
             <div className="btn-row" style={{ marginBottom: 8 }}>
@@ -658,20 +728,28 @@ export default function App() {
                       }}
                     >
                       {thumb ? (
-                        <a href={s.url || thumb} target="_blank" rel="noreferrer">
-                          <img
-                            src={thumb}
-                            alt={s.event_type || s.source}
-                            style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
-                          />
-                        </a>
+                        <CloudinaryDeliveryImage
+                          src={thumb}
+                          alt={s.event_type || s.source}
+                          href={s.cropped_url || s.url || thumb}
+                          maxChips={5}
+                          minHeight={140}
+                          imgStyle={{ width: '100%', height: 140, objectFit: 'cover' }}
+                        />
                       ) : null}
                       {!thumb ? (
                         <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', opacity: 0.7 }}>
                           No image URL
                         </div>
                       ) : null}
-                      <figcaption style={{ padding: '8px 10px', fontSize: '0.75rem' }}>
+                      <figcaption
+                        style={{
+                          padding: '8px 10px',
+                          fontSize: '0.75rem',
+                          color: '#e2e8f0',
+                          background: 'rgba(15, 23, 42, 0.92)',
+                        }}
+                      >
                         <span
                           style={{
                             display: 'inline-block',
@@ -686,15 +764,15 @@ export default function App() {
                           {s.source}
                         </span>
                         <br />
-                        <strong>{s.event_type || '—'}</strong>
+                        <strong style={{ color: '#f8fafc' }}>{s.event_type || '—'}</strong>
                         <br />
-                        <span className="mono" style={{ opacity: 0.85 }}>
+                        <span className="mono" style={{ opacity: 0.9, color: '#cbd5e1' }}>
                           {s.snapshot_id.slice(-8)}
                         </span>
                         {s.event_id ? (
                           <>
                             <br />
-                            <span className="mono" style={{ opacity: 0.75 }}>
+                            <span className="mono" style={{ opacity: 0.85, color: '#94a3b8' }}>
                               evt {s.event_id.slice(-8)}
                             </span>
                           </>
@@ -702,8 +780,15 @@ export default function App() {
                         {s.created_at ? (
                           <>
                             <br />
-                            {s.created_at}
+                            <span style={{ color: '#94a3b8' }}>{s.created_at}</span>
                           </>
+                        ) : null}
+                        {s.url && s.vision_crop_zone ? (
+                          <FullFrameCropDetails
+                            rawUrl={s.url.trim()}
+                            zone={s.vision_crop_zone}
+                            summaryColor="#94a3b8"
+                          />
                         ) : null}
                       </figcaption>
                     </figure>
