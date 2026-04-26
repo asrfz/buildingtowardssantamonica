@@ -15,6 +15,7 @@ LEARNING_AGENT_ADDRESS      = "agent1qwqyq0k9t9nk37lt7g4q2qsd8lzv7lju9k2lwzrhl9g
 REPORT_AGENT_ADDRESS        = "agent1q2hlgw75yl6l49mx7u7pqej6sdu3jam2lykr7u48dftg2exfzvn2g79ztpv"
 HEARTBEAT_AGENT_ADDRESS     = "agent1qtdma26fxnnfftn6zcntvkv42fah7r8zlz6lh64ns5my4vxzam5gg6anf4x"
 VOICE_AGENT_ADDRESS         = "agent1q0c73gpcpwdjg96fnp8nnlzr2ta4t96czskfg7y9msfr49ukc5g2yjtw0kk"
+VOICE_INPUT_AGENT_ADDRESS   = "agent1qwn686mp4zv87lves0rfc6wunufz7mze0ugsgzg4m5cd96m4jp22cfhrdg5"
 
 
 # ── Message types ────────────────────────────────────────────────────────────
@@ -97,6 +98,34 @@ class HeartbeatStatus(Model):
     agent_name: str
     status: str                 # "online" | "offline"
     silence_seconds: float
+    timestamp_iso: str
+
+
+class VoiceQuery(Model):
+    """
+    voice_input_agent -> dashboard_agent
+
+    Carries a spoken query captured via ElevenLabs Scribe STT after a wake word
+    is detected. dashboard_agent processes it identically to an ASI:One chat
+    message and sends back a VoiceQueryResponse.
+    """
+    query_id: str       # UUID -- used to correlate response
+    user_id: str
+    transcript: str     # question text (wake word already stripped)
+    timestamp_iso: str
+
+
+class VoiceQueryResponse(Model):
+    """
+    dashboard_agent -> voice_input_agent
+
+    Contains the Claude-generated answer to a VoiceQuery. voice_input_agent
+    pushes both transcript and answer to the FastAPI WebSocket so the visual
+    overlay updates in real-time for the deaf user.
+    """
+    query_id: str
+    answer: str
+    transcript: str     # echoed back for display pairing
     timestamp_iso: str
 
 

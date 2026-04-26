@@ -40,6 +40,7 @@ from agents.report_agent       import report_agent
 from agents.heartbeat_agent    import heartbeat_agent
 from agents.dashboard_agent    import dashboard_agent
 from agents.voice_agent        import voice_agent
+from agents.voice_input_agent  import voice_input_agent
 
 bureau = Bureau(port=8002)
 
@@ -55,6 +56,7 @@ bureau.add(report_agent)
 bureau.add(heartbeat_agent)
 bureau.add(dashboard_agent)
 bureau.add(voice_agent)
+bureau.add(voice_input_agent)
 
 if __name__ == "__main__":
     print("Starting all HomePulse agents (including voice_agent)...")

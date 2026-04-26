@@ -132,16 +132,16 @@ def _tts_worker() -> None:
             break
 
         try:
-            audio_bytes = client.text_to_speech.convert(
-                voice_id=voice_id,
-                text=req.text,
-                model_id=req.model_id,
-                voice_settings=voice_settings,
-                output_format="mp3_22050_32",  # smallest MP3 tier — fast delivery
+            # SDK 2.x: convert() always returns Iterator[bytes] — join into one buffer
+            audio_bytes = b"".join(
+                client.text_to_speech.convert(
+                    voice_id=voice_id,
+                    text=req.text,
+                    model_id=req.model_id,
+                    voice_settings=voice_settings,
+                    output_format="mp3_22050_32",  # smallest MP3 — fast delivery
+                )
             )
-            # convert() returns bytes directly in SDK 2.x
-            if not isinstance(audio_bytes, bytes):
-                audio_bytes = b"".join(audio_bytes)
 
             _play_mp3_bytes(audio_bytes)
             logger.debug(f"[TTS] spoke: {req.text[:60]}")

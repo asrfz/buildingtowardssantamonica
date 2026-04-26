@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 motor
+pymongo>=4.6
 pydantic
 pydantic-settings
 python-dotenv
@@ -14,6 +15,8 @@ numpy
 Pillow
 elevenlabs
 pygame
+sounddevice
+httpx
 pytest
 pytest-asyncio
 pytest-mock

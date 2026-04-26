@@ -27,6 +27,7 @@ from uagents_core.contrib.protocols.chat import (
 from app.config import settings
 from app.database import connect_db, get_db
 from app.services import claude_service
+from agents.agent_messages import VoiceQuery, VoiceQueryResponse, VOICE_INPUT_AGENT_ADDRESS
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,34 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
 
 
 dashboard_agent.include(chat_proto, publish_manifest=True)
+
+
+# ── Voice input handler (deaf-user spoken queries) ────────────────────────────
+
+@dashboard_agent.on_message(VoiceQuery)
+async def handle_voice_query(ctx: Context, sender: str, msg: VoiceQuery) -> None:
+    """
+    Receives a spoken query transcribed by ElevenLabs Scribe via voice_input_agent.
+    Reuses the same _build_response() pipeline as ASI:One chat.
+    Sends VoiceQueryResponse back so voice_input_agent can push it to the browser overlay.
+    """
+    ctx.logger.info(f"[VoiceQuery] {msg.query_id[:8]}: {msg.transcript!r}")
+    try:
+        answer = await _build_response(msg.transcript)
+    except Exception as exc:
+        ctx.logger.error(f"VoiceQuery response error: {exc}", exc_info=True)
+        answer = "I had trouble fetching that information. Please try again."
+
+    reply_to = VOICE_INPUT_AGENT_ADDRESS or sender
+    await ctx.send(
+        reply_to,
+        VoiceQueryResponse(
+            query_id=msg.query_id,
+            answer=answer,
+            transcript=msg.transcript,
+            timestamp_iso=datetime.now(timezone.utc).isoformat(),
+        ),
+    )
 
 
 # ── Core response builder ─────────────────────────────────────────────────────

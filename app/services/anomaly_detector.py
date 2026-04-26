@@ -2,6 +2,12 @@ from dataclasses import dataclass, field
 from bson import ObjectId
 from app.models.sensor import SensorPayload
 from app.utils.severity import compute_severity
+from app.services.vector_service import (
+    payload_to_embedding,
+    store_sensor_vector,
+    vector_anomaly_score,
+    ANOMALY_SIMILARITY_THRESHOLD,
+)
 
 
 @dataclass
@@ -29,12 +35,17 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
     user = await db.users.find_one({"_id": ObjectId(user_id)})
     multiplier = (user or {}).get("threshold_multiplier", 2.5)
 
-    # Temperature check
+    # Compute embedding once — reused for storage regardless of trigger path
+    embedding = payload_to_embedding(payload, baseline)
+
+    # ── Z-score checks (single-field, fast) ──────────────────────────────────
+
     temp_mean = baseline["temperature"]["mean"]
-    temp_std = baseline["temperature"]["std_dev"]
-    temp_dev = abs(payload.temperature_c - temp_mean)
+    temp_std  = baseline["temperature"]["std_dev"]
+    temp_dev  = abs(payload.temperature_c - temp_mean)
     if temp_dev > multiplier * temp_std:
         score = round(temp_dev / temp_std, 2)
+        await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
             triggered=True,
             event_type=_classify_temp_event(payload),
@@ -43,12 +54,12 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
             sensor="temperature",
         )
 
-    # Sound check
     sound_mean = baseline["sound_level"]["mean"]
-    sound_std = baseline["sound_level"]["std_dev"]
-    sound_dev = abs(payload.sound_level - sound_mean)
+    sound_std  = baseline["sound_level"]["std_dev"]
+    sound_dev  = abs(payload.sound_level - sound_mean)
     if sound_dev > multiplier * sound_std:
         score = round(sound_dev / sound_std, 2)
+        await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
             triggered=True,
             event_type=_classify_sound_event(payload),
@@ -57,9 +68,9 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
             sensor="sound",
         )
 
-    # Magnetic check (door open)
     mag_mean = baseline["magnetic_state"]["mean"]
     if payload.magnetic_state != round(mag_mean) and payload.magnetic_state == 1:
+        await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
         return AnomalyResult(
             triggered=True,
             event_type="FRIDGE_OPEN",
@@ -68,6 +79,23 @@ async def score_reading(user_id: str, payload: SensorPayload, db) -> AnomalyResu
             sensor="magnetic",
         )
 
+    # ── Vector catch-all (multi-variate anomaly) ─────────────────────────────
+    # Runs only when no single field tripped — catches combinations like
+    # mildly-elevated temp + unusual accelerometer together.
+    similarity = await vector_anomaly_score(user_id, embedding, db)
+    if similarity < ANOMALY_SIMILARITY_THRESHOLD:
+        deviation = round((1.0 - similarity) * 20, 2)   # scale to deviation units
+        await store_sensor_vector(user_id, payload, embedding, is_anomaly=True, db=db)
+        return AnomalyResult(
+            triggered=True,
+            event_type="MULTIVARIATE_ANOMALY",
+            deviation_score=deviation,
+            severity=compute_severity(deviation),
+            sensor="vector",
+            reason=f"vector_similarity={similarity:.3f}",
+        )
+
+    await store_sensor_vector(user_id, payload, embedding, is_anomaly=False, db=db)
     return AnomalyResult(triggered=False)
 
 
