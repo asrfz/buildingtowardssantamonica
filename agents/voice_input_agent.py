@@ -11,6 +11,8 @@ Full pipeline per utterance:
       -> short TTS greeting ("Hello, how can I help you?") — no automatic home recap
       -> a follow-up window opens where the next utterance does not need the wake phrase
     [User speaks] "Hey HomePulse, what's on my profile?" (or follow-up: "What incidents were there?")
+    [User speaks] "Bye HomePulse" / "Goodbye" / "Stop listening" (during follow-up or after wake)
+      -> disarms follow-up window; short goodbye TTS without re-arming; mic needs wake phrase again
       -> sounddevice captures audio (wake_word_service background thread)
       -> energy VAD detects utterance boundaries
       -> ElevenLabs Scribe (stt_service) transcribes to text
@@ -54,6 +56,7 @@ from app.config import settings
 from app.database import connect_db, get_db
 from app.services.wake_word_service import (
     arm_voice_followup_window,
+    disarm_voice_followup_window,
     start as start_listener,
     detected_query_queue,
 )
@@ -82,6 +85,34 @@ VOICE_ASSISTANT_GREETING = "Hello, how can I help you?"
 # When STT is filler or small-talk, don't call the dashboard (avoids long sensor recaps).
 VOICE_NOT_A_QUESTION_REPLY = (
     "Say what you need — for example your profile, recent alerts, or what's happening at home."
+)
+
+# After user ends voice session — TTS must use invoke_playback_hooks=False so follow-up does not re-open.
+VOICE_SESSION_GOODBYE = "Goodbye. Say Hey HomePulse when you need me."
+
+# End active assistant / follow-up mode (normalized line, fullmatch). Fuzzy pulse/post like wake patterns.
+_DISMISS_VOICE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?is)^\s*(?:"
+        r"bye\b|good-?bye\b|goodbye\b|see\s+you\b|see\s+ya\b|cya\b|cheerio\b"
+        r")\s*(?:,|\s)*\s*(?:home\s*)?(?:pulse|post|posts|homepulse|program)?\s*\.{0,3}\s*$"
+    ),
+    re.compile(
+        r"(?is)^\s*(?:home\s*)?(?:pulse|post|posts|homepulse)\s*(?:,|\s)+"
+        r"(?:bye|good-?bye|goodbye|see\s+you|see\s+ya)\s*\.{0,3}\s*$"
+    ),
+    re.compile(
+        r"(?is)^\s*(?:"
+        r"stop\s+listening\b|end\s+(?:the\s+)?session\b|go\s+to\s+sleep\b|sleep\s+(?:now|mode)\b|"
+        r"that(?:'|’)?s\s+all\b|that\s+is\s+all\b|we(?:'|’)?re\s+done\b|we\s+are\s+done\b|"
+        r"i(?:'|’)?m\s+done\b|i\s+am\s+done\b|"
+        r"no\s+more\s+questions?\b|nothing\s+else\b|all\s+set\b|"
+        r"good\s+night\b(?:\s*(?:home\s*)?(?:pulse|post|posts|homepulse))?\s*|"
+        r"dismiss(?:\s+(?:assistant|voice|home\s*pulse|homepulse))?\b|"
+        r"turn\s+off(?:\s+(?:assistant|voice))?\b|mute\s+yourself\b|"
+        r"later\s*,?\s*(?:home\s*)?(?:pulse|post|posts|homepulse)\b"
+        r")\s*\.{0,3}\s*$"
+    ),
 )
 
 # Avoid bare "how" — matches echoed "how can I help you" from TTS. No bare "week"/"report" (TV false positives).
@@ -126,6 +157,18 @@ def _strip_stt_artifacts(text: str) -> str:
 def _is_likely_assistant_echo(text: str) -> bool:
     n = _strip_stt_artifacts(text).lower()
     return any(s in n for s in _ECHO_SUBSTRINGS)
+
+
+def _is_dismiss_voice_session(text: str) -> bool:
+    """True if user is ending follow-up / assistant mode (bye HomePulse, stop listening, etc.)."""
+    t = _strip_stt_artifacts(text)
+    if not t:
+        return False
+    n = t.strip()
+    n = re.sub(r"[.?!…]+$", "", n, flags=re.UNICODE).strip()
+    if not n:
+        return False
+    return any(p.fullmatch(n) is not None for p in _DISMISS_VOICE_PATTERNS)
 
 
 def _utterance_asks_for_home_data(text: str) -> bool:
@@ -303,7 +346,10 @@ async def startup(ctx: Context) -> None:
     await connect_db()
     start_listener()    # starts wake_word_service background thread
     ctx.logger.info(f"voice_input_agent online -- address: {voice_input_agent.address}")
-    ctx.logger.info("Wake word listener started. Say 'Hey HomePulse' to query.")
+    ctx.logger.info(
+        "Wake word listener started. Say 'Hey HomePulse' to query; "
+        "'Bye HomePulse' / 'Stop listening' ends follow-up mode."
+    )
     await _push("listening", "")
 
 
@@ -329,13 +375,26 @@ async def poll_queries(ctx: Context) -> None:
             await speak_async(VOICE_ASSISTANT_GREETING, correction=False)
             continue
 
-        query_id = str(uuid4())
-        ctx.logger.info(f"[VoiceInput] Heard {query_id[:8]}: {question!r}")
+        ctx.logger.info(f"[VoiceInput] Heard: {question!r}")
         await _push("transcript", question)
+
+        if _is_dismiss_voice_session(question):
+            disarm_voice_followup_window()
+            ctx.logger.info("[VoiceInput] Voice session dismissed — follow-up window cleared")
+            await _push("answer", VOICE_SESSION_GOODBYE)
+            await speak_async(
+                VOICE_SESSION_GOODBYE,
+                correction=False,
+                invoke_playback_hooks=False,
+            )
+            continue
 
         if _is_likely_assistant_echo(question):
             ctx.logger.info("[VoiceInput] Ignoring likely TTS / assistant echo — not routing")
             continue
+
+        query_id = str(uuid4())
+        ctx.logger.info(f"[VoiceInput] Routing query {query_id[:8]}: {question!r}")
 
         if _transcript_requests_external_help(question):
             uid = settings.DEFAULT_USER_ID or ""

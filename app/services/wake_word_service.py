@@ -134,6 +134,17 @@ def arm_voice_followup_window() -> None:
     _followup_deadline = time.monotonic() + FOLLOWUP_WINDOW_SECONDS
 
 
+def disarm_voice_followup_window() -> None:
+    """End active assistant / follow-up mode — user must say the wake phrase again."""
+    global _followup_deadline
+    _followup_deadline = 0.0
+
+
+def voice_followup_armed() -> bool:
+    """True if a follow-up utterance would be accepted without the wake word."""
+    return time.monotonic() < _followup_deadline
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _rms(chunk: np.ndarray) -> float:
@@ -246,8 +257,9 @@ def _listen_loop() -> None:
             callback=_callback,
         ):
             logger.info(
-                "[WakeWord] Listening... say a wake phrase to start, then your question — "
-                "or ask another question within %.0fs after HomePulse replies without repeating the wake phrase.",
+                "[WakeWord] Listening... wake phrase to start, then your question — "
+                "or speak within %.0fs after a reply without repeating the wake phrase. "
+                "Say goodbye / bye HomePulse / stop listening to end that session.",
                 FOLLOWUP_WINDOW_SECONDS,
             )
             _stop_event.wait()   # block until stop() is called

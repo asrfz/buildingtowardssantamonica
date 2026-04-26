@@ -37,6 +37,8 @@ After `triage_agent` confirms an event warrants investigation, `history_agent` a
 - User's behavioral schema (false positive rates, frequency patterns)
 - Time of day
 
+(HomePulse also stores an optional Cloudinary **context-expanded** URL — AI-filled borders on the full frame — for the dev UI only; monitor reasoning uses the zone crop.)
+
 Claude sees the actual webcam frame of what triggered the alert. It reasons across all of this context and returns:
 
 ```json

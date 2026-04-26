@@ -71,3 +71,9 @@ export default defineConfig([
   },
 ])
 ```
+
+---
+
+## HomePulse dev console
+
+`src/App.tsx` loads alert clips from `GET /events/{userId}` (`cropped_image_url` / `raw_image_url`). Live WebSocket alerts include `data.image_url` for the zone crop.

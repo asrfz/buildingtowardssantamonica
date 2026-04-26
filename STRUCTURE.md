@@ -52,7 +52,7 @@ homepulse/
 │   ├── services/               ← Business logic (called by routers + agents)
 │   │   ├── anomaly_detector.py   ← Compare reading to baseline, compute deviation score
 │   │   ├── baseline_service.py   ← Compute + update sensor baselines in MongoDB
-│   │   ├── cloudinary_service.py ← Upload frame, apply crop + enhance transformation
+│   │   ├── cloudinary_service.py ← Upload frame; crop + enhance + f_auto; optional gen_fill context URL
 │   │   ├── gmail_service.py      ← Gmail SMTP: send alert + weekly digest emails
 │   │   ├── vision_service.py     ← Webcam capture (OpenCV) + zone lookup
 │   │   ├── learning_service.py   ← Update baselines + behavioral schema post-event
@@ -133,8 +133,9 @@ homepulse/
 - `get_zone_for_event(user_id, event_type, db) → dict | None` — zone bounding box lookup
 
 ### `app/services/cloudinary_service.py`
-- `upload_and_crop(frame, event_id, zone) → {raw_url, cropped_url}`
-- Applies: crop to zone → e_sharpen:80 → e_improve
+- `upload_and_crop` / `upload_and_crop_from_b64` → `{raw_url, cropped_url, context_expanded_url?, width, height, public_id}`
+- Evidence chain: crop to zone → e_sharpen:80 → e_improve → q_auto → f_auto
+- Optional second URL: pad + Generative Fill on full frame (same `public_id`), then improve / q_auto / f_auto
 
 ### `app/services/anomaly_detector.py`
 - `score_reading(user_id, payload, db) → AnomalyResult`

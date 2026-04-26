@@ -159,7 +159,7 @@ triage_agent              ← Claude: is this real? filter noise early
 #### `vision_agent`
 - Captures a webcam frame via `cv2.VideoCapture` (`WEBCAM_INDEX` in settings)
 - Primary: `claude_service.detect_objects_in_frame` on a JPEG of the frame to get fractional boxes for the event’s target object; fallback: MongoDB `room_zones` (pixel boxes; no `VoiceAlert` in that case)
-- Uploads the raw frame to Cloudinary, builds a zone crop with `fl_relative` when coords are 0–1, plus sharpen/improve/`q_auto`
+- Uploads the raw frame to Cloudinary, builds a zone crop with `fl_relative` when coords are 0–1, plus sharpen/improve/`q_auto`/`f_auto`, and optionally a second delivery URL with Generative Fill on the full frame (`context_expanded_url` → Mongo `context_expanded_image_url`)
 - Returns `VisionResult` (raw + cropped URLs) to `monitor_agent`
 - If the zone is fractional, sends `VoiceAlert` to `voice_agent` so TTS and the correction loop can use the same coordinate space as Cloudinary
 
@@ -254,9 +254,10 @@ Call once at startup in `app/main.py`.
 
 ### What Happens Per Event
 1. Raw webcam frame uploaded via `cloudinary.uploader.upload()`
-2. Zone bounding box from MongoDB passed as crop coordinates
-3. Cloudinary applies: crop → sharpen → improve
-4. Returns public URL embedded in Gmail alert email
+2. Zone bounding box (Claude fractions with `fl_relative`, or Mongo pixel coords) passed as crop parameters
+3. **Evidence crop URL:** crop → sharpen → improve → `q_auto` → `f_auto`
+4. **Optional context URL (same upload):** pad + Generative Fill (`b_gen_fill`) on the full frame for AI-extended borders — **illustrative only**; toggled via `CLOUDINARY_AI_CONTEXT_EXPAND`
+5. Public URLs stored on the event (`cropped_image_url`, `raw_image_url`, `context_expanded_image_url`) and used in the dev UI / WebSocket alert payload; emails still prioritize the zone crop for diagnosis
 
 ### Transformation Example
 ```

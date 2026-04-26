@@ -52,7 +52,7 @@ Claude returns structured JSON:
 ```
 
 **2. Multimodal Reasoning (Claude + Cloudinary Vision)**
-When triage flags an event, a webcam captures the scene. Cloudinary crops it to the exact zone (stove, sink, fridge). Claude receives the image URL and reasons about what it sees alongside the sensor data.
+When triage flags an event, a webcam captures the scene. Cloudinary crops it to the exact zone (stove, sink, fridge) and can also expose an optional **AI-extended** full-frame URL (Generative Fill) for demos — Claude still reasons primarily on the zone crop. Cloudinary delivers both from a single upload.
 
 **3. Natural Language Notifications**
 Claude writes the alert email — not a template. It explains what happened, what the sensor data showed, and what the family member should do. A real sentence, for a real person in a stressful moment.
@@ -101,7 +101,7 @@ This is Claude helping a 78-year-old woman stay in her own home, safely, with di
 | Backend | FastAPI + MongoDB (Motor async) |
 | Agents | FetchAI uAgents (10 orchestrated agents) |
 | AI Reasoning | Anthropic Claude Sonnet (triage, monitor, notify, report) |
-| Vision | OpenCV + Cloudinary (capture, crop, enhance) |
+| Vision | OpenCV + Cloudinary (capture, crop, enhance, optional AI-extended full-frame URL) |
 | Notifications | Gmail SMTP with Claude-written emails |
 | Frontend | React + Vite (live event feed, zone calibrator) |
 

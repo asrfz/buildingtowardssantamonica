@@ -52,7 +52,7 @@ The vector corpus self-improves: every normal reading gets stored, so the system
 **Atlas index spec:** type `vectorSearch`, 7 dimensions, cosine similarity, with filter fields on `user_id` and `is_anomaly`.
 
 ### `events`
-The full lifecycle of every detected anomaly lives here. Events are written by `triage_agent` immediately when detection occurs, then updated by `monitor_agent` after Claude vision reasoning completes. Fields include: event type, severity, sensor payload, raw and cropped Cloudinary image URLs, Claude's recommended action, triage confidence, and final status (`triaged → monitored → notified`).
+The full lifecycle of every detected anomaly lives here. Events are written by `triage_agent` immediately when detection occurs, then updated by `monitor_agent` after Claude vision reasoning completes. Fields include: event type, severity, sensor payload, raw and cropped Cloudinary image URLs, optional **`context_expanded_image_url`** (Generative Fill / illustrative context), Claude's recommended action, triage confidence, and final status (`triaged → monitored → notified`).
 
 The `dashboard_agent` queries this collection to answer natural language questions from caregivers via the ASI:One chat interface: "What happened at home this week?" pulls the last 7 days of events and feeds them into a Claude prompt.
 

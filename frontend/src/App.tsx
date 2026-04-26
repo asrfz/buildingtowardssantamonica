@@ -140,7 +140,10 @@ export default function App() {
             detected_at: e.detected_at != null ? String(e.detected_at) : '',
           }
         })
-        .filter((e) => (e.cropped_image_url || e.raw_image_url) && e.event_id)
+        .filter(
+          (e) =>
+            (e.cropped_image_url || e.raw_image_url) && e.event_id,
+        )
         .slice(0, 24)
       setCloudinaryClips(withMedia)
     } catch (e) {
@@ -253,7 +256,14 @@ export default function App() {
             const time = new Date().toLocaleTimeString()
             setAlerts((prev) => {
               const id = eventId || `anon-${label}-${recommended.slice(0, 40)}`
-              const next: LiveAlert = { id, label, severity, recommended_action: recommended, image_url: imageUrl, time }
+              const next: LiveAlert = {
+                id,
+                label,
+                severity,
+                recommended_action: recommended,
+                image_url: imageUrl,
+                time,
+              }
               const without = prev.filter((a) => a.id !== id)
               return [next, ...without].slice(0, 6)
             })
@@ -516,9 +526,9 @@ export default function App() {
           <section className="card camera-card">
             <h2>Vision clips (Cloudinary)</h2>
             <p className="hint">
-              After triage + vision, event records get <code>cropped_image_url</code> / <code>raw_image_url</code>. Loaded
-              from <code>GET /events/&#123;userId&#125;</code> (API on :8000). The preview above is the live bureau FOV;
-              this grid is alert-specific crops.
+              After triage + vision, events get <code>cropped_image_url</code> (zone evidence) and <code>raw_image_url</code>.
+              Loaded from <code>GET /events/&#123;userId&#125;</code>. The preview above is the live bureau FOV; this grid is
+              alert-specific.
             </p>
             {clipsError ? <p className="warn">{clipsError}</p> : null}
             <div className="btn-row" style={{ marginBottom: 8 }}>
@@ -553,7 +563,13 @@ export default function App() {
                         background: sev.bg,
                       }}
                     >
-                      <img src={src} alt={c.event_type} style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }} />
+                      {src ? (
+                        <img
+                          src={src}
+                          alt={c.event_type}
+                          style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
+                        />
+                      ) : null}
                       <figcaption style={{ padding: '8px 10px', fontSize: '0.75rem', color: sev.text }}>
                         <strong>{c.event_type}</strong> · {c.severity}
                         <br />
@@ -629,11 +645,12 @@ export default function App() {
                             style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
                           />
                         </a>
-                      ) : (
+                      ) : null}
+                      {!thumb ? (
                         <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', opacity: 0.7 }}>
                           No image URL
                         </div>
-                      )}
+                      ) : null}
                       <figcaption style={{ padding: '8px 10px', fontSize: '0.75rem' }}>
                         <span
                           style={{

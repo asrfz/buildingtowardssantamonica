@@ -126,7 +126,8 @@ async def _try_reason(ctx: Context, event_id: str) -> None:
                     "cropped_image_url": vision.cropped_url,
                     "monitor_reasoning": decision.get("reasoning", ""),
                     "status": "monitored",
-                }
+                },
+                "$unset": {"context_expanded_image_url": ""},
             },
         )
     except Exception as e:

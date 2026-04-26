@@ -22,7 +22,7 @@ There are **13 autonomous agents** running in a single Bureau. They communicate 
 
 **`history_agent`** — Receives `TriageResult`. Pulls the last 10 events of the same type from MongoDB and the user's behavioral schema. Sends `UserHistoryContext` to `monitor_agent`.
 
-**`vision_agent`** — Receives `TriageResult`. Captures a webcam frame, runs Claude dynamic object detection to find the relevant object's bounding box, uploads the frame to Cloudinary with the crop and q_auto encoding applied, and sends both a `VisionResult` to `monitor_agent` and a `VoiceAlert` to `voice_agent`.
+**`vision_agent`** — Receives `TriageResult`. Captures a webcam frame, runs Claude dynamic object detection to find the relevant object's bounding box, uploads the frame to Cloudinary (zone crop with `q_auto`/`f_auto`, plus optional **Generative Fill** context URL on the same asset), and sends a `VisionResult` (`context_expanded_url` when enabled) to `monitor_agent` and optionally a `VoiceAlert` to `voice_agent`.
 
 ### Synthesis Layer
 
@@ -63,7 +63,7 @@ All typed using uAgents `Model` (Pydantic v1):
 | `IrregularityEvent` | sensor → triage | Raw anomaly detection result |
 | `TriageResult` | triage → history + vision | Confirmed investigation, fan-out |
 | `UserHistoryContext` | history → monitor | Prior events + behavioral schema |
-| `VisionResult` | vision → monitor | Cloudinary URLs + zone name |
+| `VisionResult` | vision → monitor | Cloudinary URLs (`raw`, `cropped`, optional AI context) + zone name |
 | `MonitorDecision` | monitor → escalation | Claude's full reasoning output |
 | `EscalationOrder` | escalation → notification | Recipients, severity, cancel window |
 | `HeartbeatStatus` | heartbeat → escalation | Agent liveness signal |

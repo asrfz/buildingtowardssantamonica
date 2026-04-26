@@ -57,6 +57,8 @@ _DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 class SpeechRequest:
     text: str
     model_id: str = MODEL_ALERT
+    # When False, skip playback-finished hooks (e.g. disarm voice follow-up — do not re-arm after goodbye TTS).
+    invoke_playback_hooks: bool = True
 
 
 # ── Internal queue + worker ───────────────────────────────────────────────────
@@ -130,7 +132,8 @@ def _tts_worker() -> None:
             if req is None:
                 break
             logger.info(f"[TTS] (no API key) would speak: {req.text[:120]}")
-            _invoke_playback_finished_hooks()
+            if req.invoke_playback_hooks:
+                _invoke_playback_finished_hooks()
             _queue.task_done()
         return
 
@@ -186,7 +189,8 @@ def _tts_worker() -> None:
         finally:
             _tts_speaking.clear()
             _stt_suppress_until = time.monotonic() + TTS_STT_TAIL_COOLDOWN_SEC
-            _invoke_playback_finished_hooks()
+            if req.invoke_playback_hooks:
+                _invoke_playback_finished_hooks()
             _queue.task_done()
 
 
@@ -200,22 +204,29 @@ def _ensure_worker() -> None:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def speak(text: str, *, correction: bool = False) -> None:
+def speak(text: str, *, correction: bool = False, invoke_playback_hooks: bool = True) -> None:
     """
     Enqueue a phrase for TTS playback. Non-blocking — returns before audio plays.
 
     correction=True  →  eleven_flash_v2_5 (ultra-low latency, correction loop)
     correction=False →  eleven_turbo_v2_5 (higher quality, initial alerts)
+    invoke_playback_hooks=False → do not run registered playback hooks (e.g. skip re-arming voice follow-up).
     """
     _ensure_worker()
     model = MODEL_CORRECTION if correction else MODEL_ALERT
     logger.info(f"[TTS] queued ({'flash' if correction else 'turbo'}): {text}")
-    _queue.put(SpeechRequest(text=text, model_id=model))
+    _queue.put(
+        SpeechRequest(
+            text=text,
+            model_id=model,
+            invoke_playback_hooks=invoke_playback_hooks,
+        )
+    )
 
 
-async def speak_async(text: str, *, correction: bool = False) -> None:
+async def speak_async(text: str, *, correction: bool = False, invoke_playback_hooks: bool = True) -> None:
     """Async alias for speak(). Safe to call from any coroutine."""
-    speak(text, correction=correction)
+    speak(text, correction=correction, invoke_playback_hooks=invoke_playback_hooks)
 
 
 def stop_all() -> None:

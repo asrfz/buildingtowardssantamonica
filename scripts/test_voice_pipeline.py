@@ -219,10 +219,12 @@ async def test_cloudinary():
     # Verify q_auto is in the transformation URL
     has_q_auto = "q_auto" in urls["cropped_url"]
     has_crop   = "c_crop" in urls["cropped_url"] or "crop" in urls["cropped_url"]
+    has_f_auto = "f_auto" in urls["cropped_url"]
     print(f"  q_auto in URL    : {PASS if has_q_auto else FAIL}")
+    print(f"  f_auto in URL    : {PASS if has_f_auto else FAIL}")
     print(f"  crop in URL      : {PASS if has_crop else FAIL}")
 
-    ok = has_q_auto
+    ok = has_q_auto and has_f_auto
     print(f"  {PASS if ok else FAIL} Cloudinary upload + encoding")
     return ok
 
@@ -283,8 +285,8 @@ async def test_full_pipeline():
         urls = await upload_and_crop(frame, "pipeline_test_full", zone)
         print(f"        raw_url     : {urls['raw_url'][:80]}...")
         print(f"        cropped_url : {urls['cropped_url'][:80]}...")
-        cloudinary_ok = "q_auto" in urls["cropped_url"]
-        print(f"        q_auto encoding: {PASS if cloudinary_ok else FAIL}")
+        cloudinary_ok = "q_auto" in urls["cropped_url"] and "f_auto" in urls["cropped_url"]
+        print(f"        q_auto + f_auto: {PASS if cloudinary_ok else FAIL}")
     except Exception as exc:
         print(f"        {FAIL} Cloudinary error: {exc}")
         print(f"        --> Log in to cloudinary.com and verify cloud name / API key / secret in .env")

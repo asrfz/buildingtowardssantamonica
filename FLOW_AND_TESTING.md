@@ -177,7 +177,7 @@ Other addresses route the sensor → triage → … → notification pipeline. A
 3. **If anomaly** — `IrregularityEvent` → **`triage_agent`** → `claude_service.triage_event()`.
 4. **If dismissed** — Logged; chain stops.
 5. **If investigate** — **`history_agent`** and **`vision_agent`** in parallel → **`monitor_agent`**.
-6. **`vision_agent`** — Webcam/OpenCV, Claude vision for zones when applicable, Cloudinary upload + crop → `VisionResult`; optional **`VoiceAlert`** → **`voice_agent`** (TTS + spatial ticks via Claude + ElevenLabs).
+6. **`vision_agent`** — Webcam/OpenCV, Claude vision for zones when applicable, Cloudinary upload + crop (`q_auto`/`f_auto`) + optional **Generative Fill** full-frame context URL → `VisionResult` (`context_expanded_url`); optional **`VoiceAlert`** → **`voice_agent`** (TTS + spatial ticks via Claude + ElevenLabs).
 7. **`monitor_agent`** — When history + vision are ready, `claude_service.reason_about_event()` (multimodal when image URL is available), writes **events** in MongoDB, sends **`MonitorDecision`** → **`escalation_agent`**.
 8. **`escalation_agent`** — Severity ladder → **`EscalationOrder`** → **`notification_agent`**.
 9. **`notification_agent`** — Claude draft email → `gmail_service.send_alert()`, cancel window / learning hooks.
@@ -201,7 +201,9 @@ Intended for **spoken questions** (e.g. accessibility).
 
 2. **Flow:** Mic → VAD → ElevenLabs Scribe → strip wake phrase → queue → `voice_input_agent` → `VoiceQuery` to **`DASHBOARD_AGENT_ADDRESS`** → `dashboard_agent` runs same Mongo/Claude logic as chat → `VoiceQueryResponse` → **`voice_input_agent`** → `POST http://localhost:8000/voice/push` → WebSocket clients.
 
-3. **Requires:** FastAPI on **8000**, bureau running, **`DASHBOARD_AGENT_ADDRESS`** set, **`ELEVENLABS_API_KEY`** for transcription, `sounddevice` + working mic.
+3. **Follow-up window:** After a greeting or assistant reply, further utterances are accepted **without** the wake phrase for ~22s (`arm_voice_followup_window` / TTS playback hook in `wake_word_service`). Say **bye / goodbye HomePulse / stop listening / end session / good night / dismiss assistant / later home pulse** (and similar — see `agents/voice_input_agent.py`) to call **`disarm_voice_followup_window()`** and return to wake-only mode. Goodbye TTS uses `invoke_playback_hooks=False` so the session does not immediately re-open.
+
+4. **Requires:** FastAPI on **8000**, bureau running, **`DASHBOARD_AGENT_ADDRESS`** set, **`ELEVENLABS_API_KEY`** for transcription, `sounddevice` + working mic.
 
 ### B. `voice_agent` — TTS + spatial guidance after vision
 

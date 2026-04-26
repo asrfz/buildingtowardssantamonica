@@ -139,9 +139,9 @@ python scripts/simulate_trigger.py fridge   # magnetic → FRIDGE_OPEN
 5. Writes event to MongoDB (status: `dismissed` or `triaged`)
 6. If `investigate=True`, sends `TriageResult` to **history_agent** AND **vision_agent** simultaneously
 7. **history_agent** queries last 10 events + behavioral schema → sends `UserHistoryContext` to **monitor_agent**
-8. **vision_agent** captures webcam frame → looks up zone → uploads to Cloudinary → sends `VisionResult` to **monitor_agent**
+8. **vision_agent** captures webcam frame → looks up zone → uploads to Cloudinary (zone crop URL + optional **Generative Fill** context URL on the same asset) → sends `VisionResult` to **monitor_agent**
 9. **monitor_agent** collects both; once both arrive calls Claude: `reason_about_event()` with image + history
-10. Updates event in MongoDB with confirmed type, severity, image URLs, reasoning
+10. Updates event in MongoDB with confirmed type, severity, image URLs (`cropped_image_url`, `raw_image_url`, optional `context_expanded_image_url`), reasoning
 11. Sends `MonitorDecision` to **escalation_agent**
 12. **escalation_agent** applies severity ladder: LOW → log only; MEDIUM → user only; HIGH/CRITICAL → user + emergency contacts
 13. Sets cancel window (0 for CRITICAL)

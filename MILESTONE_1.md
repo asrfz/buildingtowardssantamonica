@@ -164,7 +164,7 @@ python scripts/simulate_trigger.py fridge   # door open
 ## What Milestone 2 Adds
 
 - `history_agent` — pulls MongoDB user context (no LLM)
-- `vision_agent` — webcam → OpenCV → Cloudinary → image URL
+- `vision_agent` — webcam → OpenCV → Cloudinary (zone crop + optional Generative Fill context URL) → image URLs
 - `monitor_agent` — second Claude call with image + history → full decision
 - `escalation_agent` — rule-based severity ladder + contact routing
 - `learning_agent` — scheduled 24h baseline updates

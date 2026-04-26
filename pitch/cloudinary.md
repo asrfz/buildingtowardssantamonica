@@ -11,8 +11,10 @@ HomePulse captures webcam frames the moment a sensor anomaly is confirmed. Those
 Every alert image goes through the same transformation chain:
 
 ```
-Raw JPEG upload  →  c_crop  →  e_sharpen:80  →  e_improve  →  q_auto
+Raw JPEG upload  →  c_crop  →  e_sharpen:80  →  e_improve  →  q_auto  →  f_auto
 ```
+
+**Second delivery URL (same `public_id`, no second upload):** when `CLOUDINARY_AI_CONTEXT_EXPAND=true`, we also build `context_expanded_url`: **`c_pad`** to a slightly larger canvas with **`b_gen_fill`** (Generative Fill / outpaint) on the **full raw frame**, then the same improve / `q_auto` / `f_auto` tail. Border pixels are **AI-generated** — the dev UI labels them as illustrative, not evidence. Disable via env if your plan omits Generative Fill.
 
 ### Stage 1 — Raw Upload
 
@@ -59,7 +61,7 @@ Cloudinary's content-aware auto-enhancement adjusts brightness, contrast, and sa
 
 ### Stage 5 — q_auto (Context-Aware Quality Encoding)
 
-`q_auto` is the most important encoding choice in the pipeline. Cloudinary analyzes each image's visual complexity and selects the smallest file size that retains perceived visual quality:
+`q_auto` analyzes each image's visual complexity and selects the smallest file size that retains perceived visual quality:
 
 - A blurry background behind a sharp stove burner → low quality for the background, high quality for the burner area
 - A noisy nighttime frame → more aggressive compression without visible degradation
@@ -73,6 +75,7 @@ transformation = [
     {"effect": "sharpen:80"},
     {"effect": "improve"},
     {"quality": "auto"},
+    {"fetch_format": "auto"},  # f_auto — WebP/AVIF where supported
 ]
 
 cropped_url = cloudinary.utils.cloudinary_url(
@@ -81,7 +84,11 @@ cropped_url = cloudinary.utils.cloudinary_url(
 )[0]
 ```
 
-The cropped URL is generated via `cloudinary_url()` — no second upload, no additional API call. Cloudinary applies the full transformation chain on-the-fly when the URL is requested.
+The cropped URL is generated via `cloudinary_url()` — no second upload. A separate **`context_expanded_url`** uses another transformation chain on the same asset (pad + generative fill + tail) when enabled in `app/config.py`.
+
+### Stage 6 — Optional Generative Fill (full-frame context)
+
+For demos where objects are clipped at the frame edge, an optional URL pads the canvas and uses **`b_gen_fill`** so Cloudinary outpaints the margins. Optional env **`CLOUDINARY_AI_CONTEXT_PROMPT`** steers the fill (short phrase); empty leaves behavior to Cloudinary. Stored on events as `context_expanded_image_url` and in `camera_snapshots.context_expanded_url`.
 
 ---
 
@@ -91,10 +98,11 @@ The cropped URL is generated via `cloudinary_url()` — no second upload, no add
 vision_agent captures frame (OpenCV)
     → cloudinary_service.upload_and_crop()
         → raw upload → homepulse/raw/{event_id}
-        → generate cropped_url with [crop, sharpen, improve, q_auto]
-    → VisionResult(raw_url, cropped_url) → monitor_agent
+        → generate cropped_url with [crop, sharpen, improve, q_auto, f_auto]
+        → optional context_expanded_url [pad, gen_fill, improve, q_auto, f_auto]
+    → VisionResult(raw_url, cropped_url, context_expanded_url) → monitor_agent
         → monitor_agent passes cropped_url to Claude for multimodal reasoning
-        → monitor_agent stores both URLs in MongoDB events collection
+        → monitor_agent stores URLs in MongoDB (`context_expanded_image_url` for AI-extended view)
     → VoiceAlert(raw_url, object_bbox) → voice_agent
         → voice_agent speaks directional alert using bbox for spatial guidance
     → escalation_agent → notification_agent

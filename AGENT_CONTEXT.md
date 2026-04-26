@@ -32,7 +32,7 @@
 8.  If dismissed → log to MongoDB, stop chain
 9.  If confirmed → send TriageResult to history_agent AND vision_agent (parallel)
 10. history_agent pulls MongoDB context → sends UserHistoryContext to monitor_agent
-11. vision_agent captures frame → OpenCV; Claude vision finds zone (or Mongo `room_zones` fallback) → Cloudinary upload + crop (`q_auto`) → VisionResult to monitor_agent; if zones are fractional (`pct`), VoiceAlert to voice_agent
+11. vision_agent captures frame → OpenCV; Claude vision finds zone (or Mongo `room_zones` fallback) → Cloudinary upload + crop (`q_auto`, `f_auto`) + optional full-frame Generative Fill URL → VisionResult (`context_expanded_url`) to monitor_agent; if zones are fractional (`pct`), VoiceAlert to voice_agent
 11a. voice_agent (only if step 11 sent VoiceAlert): initial phrase via ElevenLabs (`tts_service`); then every ~3s OpenCV frame → JPEG base64 → `locate_object_and_user_in_frame` → `spatial_service` → ElevenLabs until timeout/retrieved (Cloudinary not used on ticks)
 12. monitor_agent waits for both, then calls Claude (claude_service.reason_about_event())
 13. Claude returns: event_type, severity, recommended_action, email_summary
@@ -504,8 +504,14 @@ async def upload_and_crop(frame: np.ndarray, event_id: str, zone: dict) -> dict:
             {"effect": "improve"}
         ]
     )[0]
-    return {"raw_url": raw["secure_url"], "cropped_url": cropped_url}
+    return {
+        "raw_url": raw["secure_url"],
+        "cropped_url": cropped_url,
+        "context_expanded_url": "...",  # optional: pad + b_gen_fill on same public_id
+    }
 ```
+
+See `app/services/cloudinary_service.py` for the live chain and `CLOUDINARY_AI_CONTEXT_EXPAND` / `CLOUDINARY_AI_CONTEXT_PROMPT` in `app/config.py`.
 
 ---
 

@@ -9,12 +9,7 @@ Encoding pipeline for every alert image:
                             pixel coords when sourced from MongoDB zones)
     3. e_sharpen:80     →  compensate for webcam softness / motion blur
     4. e_improve        →  Cloudinary's content-aware auto-enhancement
-                           (adjusts brightness, contrast, saturation per image)
-    5. q_auto           →  context-aware quality encoding: Cloudinary analyses
-                           each image's visual complexity and picks the smallest
-                           file size that retains perceived quality. A blurry
-                           background gets lower quality; a sharp stove burner
-                           gets higher quality. No manual quality knob needed.
+    5. q_auto, f_auto   →  context-aware quality + modern formats (WebP/AVIF)
 
 Why q_auto matters here:
     Webcam frames vary wildly in quality — bright kitchen vs dim room, fast
@@ -70,6 +65,23 @@ def _build_crop_transform(zone: dict) -> dict:
     }
 
 
+def _delivery_optimize_tail() -> list[dict]:
+    """Shared tail: enhancement + auto quality + auto format."""
+    return [
+        {"effect": "improve"},
+        {"quality": "auto"},
+        {"fetch_format": "auto"},
+    ]
+
+
+def _crop_transformation_chain(zone: dict) -> list[dict]:
+    return [
+        _build_crop_transform(zone),
+        {"effect": "sharpen:80"},
+        *_delivery_optimize_tail(),
+    ]
+
+
 def _upload_and_crop_sync(frame: np.ndarray, event_id: str, zone: dict) -> dict:
     _configure()
 
@@ -81,17 +93,14 @@ def _upload_and_crop_sync(frame: np.ndarray, event_id: str, zone: dict) -> dict:
         overwrite=True,
     )
 
-    transformation = [
-        _build_crop_transform(zone),
-        {"effect": "sharpen:80"},   # compensate for webcam softness
-        {"effect": "improve"},      # content-aware brightness/contrast boost
-        {"quality": "auto"},        # context-aware encoding (see module docstring)
-    ]
+    transformation = _crop_transformation_chain(zone)
 
     cropped_url = cloudinary.utils.cloudinary_url(
         f"homepulse/raw/{event_id}",
         transformation=transformation,
     )[0]
+
+    pid = raw.get("public_id", f"homepulse/raw/{event_id}")
 
     logger.info(f"Cloudinary upload complete for event {event_id} — zone={zone.get('name', '?')}")
     return {
@@ -99,7 +108,7 @@ def _upload_and_crop_sync(frame: np.ndarray, event_id: str, zone: dict) -> dict:
         "cropped_url": cropped_url,
         "width": raw.get("width"),
         "height": raw.get("height"),
-        "public_id": raw.get("public_id", ""),
+        "public_id": pid,
     }
 
 
@@ -113,23 +122,19 @@ def _upload_and_crop_from_b64_sync(image_b64: str, event_id: str, zone: dict) ->
         resource_type="image",
         overwrite=True,
     )
-    transformation = [
-        _build_crop_transform(zone),
-        {"effect": "sharpen:80"},
-        {"effect": "improve"},
-        {"quality": "auto"},
-    ]
+    transformation = _crop_transformation_chain(zone)
     cropped_url = cloudinary.utils.cloudinary_url(
         f"homepulse/raw/{event_id}",
         transformation=transformation,
     )[0]
+    pid = raw.get("public_id", f"homepulse/raw/{event_id}")
     logger.info(f"Cloudinary upload complete for event {event_id} — zone={zone.get('name', '?')}")
     return {
         "raw_url": raw["secure_url"],
         "cropped_url": cropped_url,
         "width": raw.get("width"),
         "height": raw.get("height"),
-        "public_id": raw.get("public_id", ""),
+        "public_id": pid,
     }
 
 
@@ -141,11 +146,8 @@ async def upload_and_crop_from_b64(image_b64: str, event_id: str, zone: dict) ->
 async def upload_and_crop(frame: np.ndarray, event_id: str, zone: dict) -> dict:
     """
     Upload a webcam frame to Cloudinary and return:
-      raw_url    : full unmodified frame (for audit / monitor_agent context)
-      cropped_url: zone-cropped + encoded image (for alert emails + voice agent)
-
-    Cloudinary applies q_auto context-aware encoding on the cropped URL so the
-    alert thumbnail is always optimal quality for the captured scene.
+      raw_url     : full unmodified frame (for audit / monitor_agent context)
+      cropped_url : zone-cropped + encoded image (for alert emails + voice agent)
     """
     return await asyncio.to_thread(_upload_and_crop_sync, frame, event_id, zone)
 
