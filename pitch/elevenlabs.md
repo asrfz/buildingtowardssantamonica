@@ -1,140 +1,131 @@
 # HomePulse × ElevenLabs — Track Pitch
 
-## What We Built
+## ElevenLabs feature index {#elevenlabs-feature-index}
 
-HomePulse serves two user populations with fundamentally different needs: **elderly users** who need clear spoken alerts about home hazards, and **deaf users** who need a voice-in/text-out interface to ask questions about their home environment. ElevenLabs handles both directions — voice output via TTS and voice input via Scribe STT — making it the only voice SDK in the entire stack.
-
----
-
-## Voice Output — Real-Time Safety Alerts
-
-### Two-Model TTS Strategy
-
-We use two ElevenLabs TTS models with different latency/quality tradeoffs, selected automatically based on context:
-
-**`eleven_turbo_v2_5`** — Initial safety alerts. When a sensor anomaly is confirmed and the object's position has been determined, the first spoken alert is generated with the turbo model. Quality and naturalness matter here — the user is hearing something unexpected and alarming. We use warm, conversational language: *"Your water bottle fell to your left"* rather than a robotic beep.
-
-**`eleven_flash_v2_5`** — Progressive correction ticks. Every 3 seconds, the system recaptures a webcam frame, asks Claude where the object and the user are now, and speaks a directional correction: *"A bit further to your right"*, *"You're getting closer."* Flash's ultra-low latency is critical here — a 3-second interval with a slow TTS model creates jarring pauses. Flash keeps the guidance feeling live.
-
-```python
-# tts_service.py — model selected by caller context
-MODEL_ALERT      = "eleven_turbo_v2_5"
-MODEL_CORRECTION = "eleven_flash_v2_5"
-
-def speak(text: str, correction: bool = False) -> None:
-    model = MODEL_CORRECTION if correction else MODEL_ALERT
-    audio_bytes = b"".join(
-        client.text_to_speech.convert(
-            voice_id=settings.ELEVENLABS_VOICE_ID,
-            text=text,
-            model_id=model,
-            output_format="mp3_22050_32",
-            voice_settings=VoiceSettings(
-                stability=0.70,
-                similarity_boost=0.80,
-                style=0.0,
-                use_speaker_boost=True,
-            ),
-        )
-    )
-```
-
-`convert()` returns an `Iterator[bytes]` — we consume it fully with `b"".join()` then play via pygame.mixer (no ffmpeg dependency on Windows).
-
-### Spatial Guidance System
-
-The voice agent doesn't just say "the stove is on." It guides users to what they need to address. The `spatial_service` module converts Claude vision's fractional bounding box coordinates into directional language, accounting for camera perspective (when the camera faces the user, left/right axes are inverted):
-
-- *"Your water bottle fell to the left of you. Move to your left."*
-- *"Keep going — a bit further right."*
-- *"Good, you found it."*
-
-This loop runs for up to 30 seconds (10 ticks × 3 seconds) or until the object disappears from the camera frame (assumed retrieved) or the user's position converges on the object's position.
+| ID | Feature | Where |
+|----|---------|--------|
+| [feat-tts-stream](#feat-tts-stream) | **Text-to-speech** — `text_to_speech.convert`, MP3 `mp3_22050_32` | `app/services/tts_service.py` |
+| [feat-tts-models](#feat-tts-models) | **Two models** — `eleven_turbo_v2_5` (alerts), `eleven_flash_v2_5` (corrections) | `tts_service` |
+| [feat-voice-settings](#feat-voice-settings) | **VoiceSettings** — stability, similarity, style, speaker boost | `tts_service` |
+| [feat-voice-id](#feat-voice-id) | **Configurable voice** — `ELEVENLABS_VOICE_ID` (default Rachel) | `app/config.py`, `tts_service` |
+| [feat-stt-scribe](#feat-stt-scribe) | **Speech-to-text** — Scribe `speech_to_text.convert`, `scribe_v1` | `app/services/stt_service.py` |
+| [feat-stt-wav](#feat-stt-wav) | **16 kHz mono WAV** input from mic pipeline | `stt_service`, `wake_word_service` |
+| [feat-playback-worker](#feat-playback-worker) | **Background worker thread** — queue + pygame mixer (no ffmpeg on Windows) | `tts_service` |
+| [feat-stt-suppress](#feat-stt-suppress) | **TTS ↔ STT coordination** — suppress mic during playback + tail cooldown | `should_suppress_voice_capture`, `TTS_STT_TAIL_COOLDOWN_SEC` |
 
 ---
 
-## Voice Input — Deaf User Interface
+## What we built {#what-we-built}
 
-### The Problem
-
-Deaf users cannot hear safety alerts from the system. But they also cannot easily query the system — they can't call out to a voice assistant. HomePulse solves this with a wake-word-activated query system: the user speaks (they can speak, but not hear), the system transcribes using ElevenLabs Scribe, processes the question through the AI pipeline, and displays the answer as text on a real-time WebSocket overlay.
-
-### ElevenLabs Scribe v1 for STT
-
-The `stt_service` module wraps Scribe's `speech_to_text.convert()` API:
-
-```python
-def transcribe_sync(wav_bytes: bytes) -> str:
-    wav_file = io.BytesIO(wav_bytes)
-    wav_file.name = "audio.wav"
-    result = client.speech_to_text.convert(
-        file=wav_file,
-        model_id="scribe_v1",
-        language_code="en",
-        tag_audio_events=False,
-        timestamps_granularity="none",
-    )
-    return (result.text or "").strip()
-```
-
-We chose Scribe specifically because it keeps the entire voice stack inside ElevenLabs — TTS and STT from the same provider, single API key, consistent audio quality assumptions.
-
-### Wake Word Detection Without Extra Libraries
-
-Rather than adding Porcupine or another wake word SDK, we detect wake words by checking Scribe's transcript output for trigger phrases:
-
-```
-WAKE_WORDS = ["hey homepulse", "hey home pulse", "hey pulse", "hey program", "homepulse"]
-```
-
-If the transcript starts with (or contains) a wake word, the remaining text after the wake word is extracted as the query. This stays entirely within the ElevenLabs ecosystem and requires no additional API keys or keyword file registration.
-
-### Audio Capture and VAD
-
-`wake_word_service` uses `sounddevice` to stream 16kHz audio in 100ms chunks. A simple RMS energy VAD gate (threshold 400) determines speech boundaries — start recording when energy exceeds the threshold, stop after 1.2 seconds of silence (`SILENCE_CHUNKS=12`). The captured speech is packed into WAV bytes using Python's standard `wave` module and sent to Scribe.
-
-The captured query is placed into a thread-safe queue that `voice_input_agent` drains every second, routing the query through the FetchAI agent network to `dashboard_agent` for Claude processing.
-
-### Visual Response Overlay
-
-When `dashboard_agent` returns the Claude-generated answer, `voice_input_agent` pushes it to a FastAPI WebSocket endpoint (`/voice/push`). All connected browser clients receive the transcript and answer in real-time:
-
-```
-User says: "Hey HomePulse, was the stove left on today?"
-     ↓ Scribe STT
-transcript: "was the stove left on today?"
-     ↓ FetchAI message to dashboard_agent
-     ↓ Claude + MongoDB events query
-answer: "Yes, at 2:14 PM the stove was detected as on with no activity for 18 minutes. 
-         Margaret turned it off after being notified."
-     ↓ WebSocket push
-[browser overlay shows transcript + answer simultaneously]
-```
-
-The deaf user sees their spoken question echoed back (so they know the system heard them) and the answer displayed as styled text — no audio needed anywhere in the response path.
+HomePulse serves two overlapping needs: **spoken safety guidance** (especially for users who benefit from hearing clear, calm directions) and **voice-in / text-out** access (e.g. deaf users who speak a question and read the answer on screen). **ElevenLabs is the only third-party voice stack**: **TTS** for output and **Scribe** for input—**one API key** (`ELEVENLABS_API_KEY`), consistent audio assumptions, no parallel Whisper/pyttsx3/Web Speech dependency in the core path.
 
 ---
 
-## End-to-End ElevenLabs Coverage
+## Architecture: how ElevenLabs fits the codebase {#architecture}
 
-| User action | ElevenLabs role |
-|---|---|
-| Sensor detects stove left on | Scribe STT transcription is *not* involved here — sensor data, not speech |
-| Voice agent speaks initial alert | `eleven_turbo_v2_5` TTS — warm, natural delivery |
-| Voice agent speaks directional correction | `eleven_flash_v2_5` TTS — ultra-low latency, 3s loop |
-| User says "hey HomePulse, is everything ok?" | `scribe_v1` STT — wake word + query extraction |
-| System answers the question as text | ElevenLabs Scribe enabled the input; TTS could also read the answer aloud |
+### TTS service (`tts_service.py`) {#feat-tts-stream}
 
-ElevenLabs is the only audio technology in the stack. No pyttsx3, no gTTS, no Whisper, no Web Speech API.
+- **Public API:** **`speak(text, correction=False)`** and **`speak_async(...)`** (async wrappers used by **`monitor_agent`**, **`voice_agent`**, etc.).
+- **Queue + worker:** A **daemon thread** owns the **`ElevenLabs` client** and **pygame.mixer**. Coroutines **enqueue** and return immediately—the **uAgents / asyncio loop is not blocked** waiting on MP3 generation or speaker drain.
+- **Output:** SDK **`text_to_speech.convert`** returns an **iterator of MP3 chunks**; we **`b"".join`** then write a **NamedTemporaryFile** and play via pygame (documented choice for **Windows-friendly** playback without ffmpeg).
+- **No key:** Worker stays alive but **logs** lines instead of calling the API—demos degrade gracefully.
+
+### Model selection (`correction` flag) {#feat-tts-models}
+
+| Mode | Model | Use case |
+|------|--------|----------|
+| `correction=False` | **`eleven_turbo_v2_5`** | First alert after **`VoiceAlert`** / monitor summary—**warmer, clearer** delivery when the user is startled. |
+| `correction=True` | **`eleven_flash_v2_5`** | **~3s** spatial correction loop in **`voice_agent`**—**low latency** so guidance feels continuous. |
+
+Constants: **`MODEL_ALERT`**, **`MODEL_CORRECTION`** in `tts_service.py`.
+
+### Voice identity {#feat-voice-id}
+
+Default voice ID matches **Rachel** (`21m00Tcm4TlvDq8ikWAM`). Override with **`ELEVENLABS_VOICE_ID`** in `.env` for brand or locale experiments without code changes.
+
+### Voice settings {#feat-voice-settings}
+
+Tuned for **clarity and consistency** (higher stability, moderate similarity, `style=0`, `use_speaker_boost=True`) so directional phrases (“to your left”) stay intelligible on laptop speakers.
+
+### STT service (`stt_service.py`) {#feat-stt-scribe}
+
+- **`transcribe_sync(wav_bytes)`** — builds **`ElevenLabs`** client lazily, calls **`speech_to_text.convert`** with **`model_id="scribe_v1"`**, **`language_code="en"`**, no word timestamps (`timestamps_granularity="none"`) for speed.
+- **`transcribe(wav_bytes)`** — **`asyncio.to_thread`** wrapper so agents don’t block the event loop on HTTP.
+- **Empty API key** → warning + **`""`** transcript; callers skip routing.
+
+### Audio format in {#feat-stt-wav}
+
+**`wake_word_service`** captures **16 kHz, 16-bit mono** chunks via **sounddevice**; **`numpy_to_wav_bytes`** wraps them as **WAV** for Scribe’s **`file=`** upload.
+
+### Avoiding speaker bleed into the mic {#feat-stt-suppress}
+
+**`register_tts_playback_finished`**, **`should_suppress_voice_capture`**, **`TTS_STT_TAIL_COOLDOWN_SEC`**: while TTS plays and briefly after, the wake-word path can **drop** captures so **Scribe** does not transcribe the assistant’s own voice from the room.
 
 ---
 
-## Why ElevenLabs Specifically
+## Voice output — real-time safety {#voice-output}
 
-**Same ecosystem for TTS and STT.** One API key covers both directions. The mental model is consistent: send text, get natural speech. Send speech, get accurate text.
+### Integration points
 
-**Model granularity for latency vs. quality.** No other TTS provider gives this level of control at the model level — turbo for quality, flash for speed, selectable per call with no code restructuring. This was essential for the correction loop UX.
+- **`voice_agent`** — After **`VoiceAlert`**, speaks the initial line (**turbo**), then **`on_interval`** ticks: OpenCV → JPEG base64 → Claude locate → **`spatial_service`** → short phrases (**flash**, `correction=True`). Uses **`stop_all`** when resolving mid-phrase.
+- **`monitor_agent`** — **`speak_async`** on the post-reasoning alert string (optional TTS for the bureau machine).
 
-**Scribe's accuracy on conversational speech.** The queries from deaf users are natural language, often informal ("is the stove still on?", "what happened this morning?"). Scribe handles this without needing a custom vocabulary or acoustic model.
+### Spatial guidance
 
-**Production-quality voice for vulnerable users.** The target users are elderly or deaf. A robotic TTS voice creates anxiety. ElevenLabs' natural voice quality makes the system feel like a caring assistant, not an alarm system — which is exactly the experience we designed for.
+**`spatial_service`** turns fractional boxes into natural language (including camera **left/right** inversion where configured). ElevenLabs **does not** do spatial logic—it **renders** the strings the pipeline generates.
+
+---
+
+## Voice input — deaf-user and hands-busy queries {#voice-input}
+
+### Pipeline
+
+1. **`wake_word_service`** — RMS **VAD**, utterance bounds, WAV build → **`transcribe_sync`** (Scribe).
+2. **Wake phrases** — Substring match on transcript (e.g. “hey homepulse”, “hey program”)—**no extra wake-word SDK**.
+3. **`voice_input_agent`** — Drains queue, sends **`VoiceQuery`** to **`dashboard_agent`** (Fetch.ai).
+4. **`VoiceQueryResponse`** — **`POST /voice/push`** → WebSocket clients show **transcript + answer** (text-first response path).
+
+ElevenLabs **Scribe** enables **voice-in**; the **answer** is primarily **text on screen** (TTS for the answer is optional product-wise).
+
+---
+
+## End-to-end coverage {#coverage}
+
+| User / system action | ElevenLabs role |
+|----------------------|-----------------|
+| Sensor → monitor reasoning | Optional **turbo** TTS for spoken alert |
+| Vision → **`VoiceAlert`** → correction loop | **Turbo** then **flash** TTS |
+| User speaks wake phrase + question | **Scribe** STT |
+| Dashboard returns answer | Scribe enabled input; overlay shows text |
+
+**Principle:** One vendor for **both** directions simplifies keys, billing, and latency debugging (`scripts/test_voice_pipeline.py` exercises TTS and full pipeline when keys and hardware are present).
+
+---
+
+## Configuration {#config}
+
+| Variable | Purpose |
+|----------|---------|
+| **`ELEVENLABS_API_KEY`** | Required for real TTS/STT; empty → log-only TTS, skipped STT |
+| **`ELEVENLABS_VOICE_ID`** | Optional override for TTS voice |
+
+---
+
+## Why ElevenLabs specifically {#why-elevenlabs}
+
+**One ecosystem for TTS and STT** — Single key and consistent API surface for **`voice_agent`** and **`voice_input_agent`**.
+
+**Model choice per utterance** — **Turbo vs flash** is a **parameter**, not a forked integration—critical for the **3-second** correction UX.
+
+**Scribe on conversational queries** — Natural questions (“was the stove on?”) without maintaining a custom STT vocabulary.
+
+**Voice quality for vulnerable users** — Natural TTS reduces **alarm fatigue** and anxiety versus robotic system speech; settings prioritize **clarity** over theatrics.
+
+**Operational fit** — MP3 stream consumption + temp file + pygame matches **local bureau** deployment (laptop + mic + speakers) without chaining external media binaries.
+
+---
+
+## Operator pointers {#operators}
+
+- **`FLOW_AND_TESTING.md`** — mic, `sounddevice`, **`DASHBOARD_AGENT_ADDRESS`** for full voice-query routing.
+- **`python scripts/test_voice_pipeline.py`** — staged tests including ElevenLabs TTS and optional full webcam pipeline.

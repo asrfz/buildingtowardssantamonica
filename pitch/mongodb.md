@@ -1,155 +1,177 @@
 # HomePulse × MongoDB — Track Pitch
 
-## What We Built
+## MongoDB feature index {#mongodb-feature-index}
 
-HomePulse is a real-time home safety AI for elderly and deaf users. It detects anomalies from Arduino sensor data — stove left on, water running, fridge left open, unexpected motion — and coordinates a multi-agent response pipeline that includes computer vision, escalation, and voice guidance.
+Capabilities we rely on, with anchors for judges and engineers:
 
-MongoDB is the backbone of every decision the system makes. Every agent in the pipeline reads from or writes to MongoDB. It is not a logging layer — it is where the intelligence lives.
-
----
-
-## Collections and How They're Used
-
-### `sensor_baselines`
-Each user has 48 baseline documents (24 hours × weekday/weekend). Every baseline stores per-field distributions (mean, std_dev) for temperature, sound level, magnetic state, accelerometer axes, and pressure. The `sensor_agent` queries this collection every 5 seconds to decide whether the latest Arduino reading is anomalous. Without this collection, there is no anomaly detection.
-
-### `sensor_readings` — Vector Embeddings
-This is the MongoDB track's centerpiece. Every sensor reading is converted into a **7-dimensional normalized vector** and stored here. The pipeline:
-
-1. Z-score normalize each of the 7 sensor fields against the user's hourly baseline
-2. L2-normalize the result to a unit vector (for cosine similarity)
-3. Store with `is_anomaly: true/false` and the full raw payload
-
-```
-{ user_id, embedding: [float x7], is_anomaly: false, payload: {...}, timestamp_iso }
-```
-
-We query this collection using **MongoDB Atlas Vector Search (`$vectorSearch`)** to detect multi-variate anomalies — combinations of mildly unusual readings that wouldn't trip any single z-score threshold but are statistically far from the normal distribution in the full 7-dimensional space.
-
-```python
-pipeline = [
-    {
-        "$vectorSearch": {
-            "index": "sensor_vector_index",
-            "path": "embedding",
-            "queryVector": embedding,
-            "numCandidates": 50,
-            "limit": 5,
-            "filter": {
-                "user_id": ObjectId(user_id),
-                "is_anomaly": False,
-            },
-        }
-    },
-    {"$project": {"score": {"$meta": "vectorSearchScore"}}},
-]
-```
-
-The returned cosine similarity score (averaged across 5 nearest normal neighbors) determines whether the reading is a **multi-variate anomaly** even when no single sensor tripped. This fires a `MULTIVARIATE_ANOMALY` event through the same pipeline as any other event type.
-
-The vector corpus self-improves: every normal reading gets stored, so the system becomes a more accurate anomaly detector over time without any retraining.
-
-**Atlas index spec:** type `vectorSearch`, 7 dimensions, cosine similarity, with filter fields on `user_id` and `is_anomaly`.
-
-### `events`
-The full lifecycle of every detected anomaly lives here. Events are written by `triage_agent` immediately when detection occurs, then updated by `monitor_agent` after Claude vision reasoning completes. Fields include: event type, severity, sensor payload, raw and cropped Cloudinary image URLs, optional **`context_expanded_image_url`** (Generative Fill / illustrative context), Claude's recommended action, triage confidence, and final status (`triaged → monitored → notified`).
-
-The `dashboard_agent` queries this collection to answer natural language questions from caregivers via the ASI:One chat interface: "What happened at home this week?" pulls the last 7 days of events and feeds them into a Claude prompt.
-
-### `behavioral_schema`
-The `learning_agent` runs a daily refresh that re-analyzes all historical events per event type per user and updates per-type statistics: occurrence frequency, time-of-day distribution, and false positive rate. The `triage_agent` reads the false positive rate before every Claude triage call to calibrate Claude's confidence threshold — if the system has learned that stove alerts at 7pm are almost always false positives, it tells Claude that context.
-
-### `sensor_baselines` (write path)
-The `learning_agent` also adjusts the baseline's threshold multiplier per user based on their specific household behavior. This is stored back into the user document in `users` as `threshold_multiplier` — a dynamic value that tightens or loosens anomaly sensitivity per person.
-
-### `agent_heartbeats`
-The `heartbeat_agent` monitors whether `sensor_agent` has recently reported a reading. The `dashboard_agent` refreshes this collection every 90 seconds to keep the system appearing online during demo. The `dashboard_agent` reads it to determine whether to report the monitoring system as active or offline in response to status queries.
-
-### `room_zones`
-Pixel-coordinate or fractional bounding boxes for each room's zones of interest (stove, sink, fridge). Used as a fallback by `vision_service` when Claude vision cannot detect an object in the live frame. Claude dynamic detection takes priority; MongoDB serves as the calibrated fallback.
-
-### `user_thresholds`
-Per-resident calibrated bands for interpreting raw sensors (temperature, sound, **light_level**, pressure, magnetic). Seeded or computed so the same ADC value can mean “lights on” for one household and “lights off” for another. Consumed by `threshold_service` (`get_user_thresholds`, `upsert_user_thresholds`). This is the Mongo-backed answer to “thresholds depend on the person’s daily habits.”
-
-### `incident_reports`
-Structured post-escalation records created by `notification_agent` via `create_incident_report` for MEDIUM+ events. Each document includes human-readable `event_label`, `risk_score`, 7-D **sensor embedding** (cosine-normalized from the incident payload), image URLs, and resolution status. Linked from `events.incident_report_id`.
-
-**Similar incidents:** `GET /incidents/similar/<incident_id>?user_id=...` runs **`$vectorSearch`** on `incident_vector_index` (same cluster as operational data).
-
-**Risk over time:** `GET /incidents/risk-timeline/<user_id>` aggregates incidents by day (`$group` + `$sum` of `risk_score`) for pitch-ready “what happened to this user over time?”
-
-### Searchable events (Atlas Search + fallback)
-Events store **`user_id_str`** (string) and **`event_label`** (e.g. “Stove Left On”) at insert time (`build_event_doc`) and refresh `event_label` when `monitor_agent` confirms a type. That feeds **Atlas Search** index `sensor_event_search`:
-
-- **API:** `GET /search/events?q=stove+left+on` — natural language → matching events with **exact `detected_at` timestamps** (e.g. every time the stove was left on).
-- **Incidents:** `GET /search/incidents?q=...` uses index `incident_text_search`.
-
-**Atlas-only scripts:** `python scripts/create_search_index.py` (requires Atlas; not localhost). Indexes: `sensor_event_search`, `incident_text_search`, `incident_vector_index`.
-
-**Local / demo:** If `$search` is unavailable, `search_service` **falls back to regex** on the same fields so queries still return results without Atlas.
-
-### Patterns (aggregations, not ML training)
-`GET /search/patterns/<user_id>` (`pattern_service.get_full_pattern_report`) runs MongoDB **aggregation pipelines** on `events` / `incident_reports`: frequency by event type, hour-of-day histograms, simple week-over-week trends — “which situations happen more often” for the pitch without a separate analytics warehouse.
-
-### `sensor_readings` (vectors)
-Every scored reading can be stored as a **7-dimensional normalized embedding** with `is_anomaly`; **`$vectorSearch`** against normal neighbors powers **multivariate** anomaly detection (`vector_service` / `anomaly_detector`).
-
-### `users`
-Name, email, emergency contacts, threshold multiplier. `escalation_agent` reads the contact list to determine who receives notifications for HIGH and CRITICAL severity events.
-
-### Demo data scripts
-- `python scripts/seed_demo.py` — minimal user, baselines, zones, behavioral schema.
-- `python scripts/seed_history.py` — richer synthetic history (readings, thresholds, events with labels, incidents with embeddings) for screenshots and search demos.
+| ID | Capability | Where in repo |
+|----|------------|----------------|
+| [feat-motor-async](#feat-motor-async) | **Motor** (`AsyncIOMotorClient`) — non-blocking I/O from FastAPI + uAgents | `app/database.py` |
+| [feat-flexible-schema](#feat-flexible-schema) | **Document model** — different shapes per collection, indexes where needed | Collections below |
+| [feat-aggregation](#feat-aggregation) | **Aggregation pipeline** — search fallbacks, patterns, risk timeline, vector queries | `search_service`, `pattern_service`, `vector_service`, `incident_service` |
+| [feat-vector-search](#feat-vector-search) | **Atlas Vector Search** (`$vectorSearch`) — multivariate sensor anomalies; similar incidents | `vector_service`, `incident_service` |
+| [feat-atlas-search](#feat-atlas-search) | **Atlas Search** (`$search`) — fuzzy event/incident text | `search_service` |
+| [feat-regex-fallback](#feat-regex-fallback) | **Regex fallback** when `$search` unavailable (local Mongo) | `search_service` |
+| [feat-transactions](#feat-transactions) | **Multi-document consistency** — incident insert + event link | `incident_service` |
+| [feat-upsert-gate](#feat-upsert-gate) | **Atomic find_and_update / upsert** — Cloudinary upload slot gate | `snapshot_cloudinary_gate` |
 
 ---
 
-## MongoDB features to name in the pitch (checklist)
+## What we built {#what-we-built}
+
+HomePulse is a real-time home safety system. **MongoDB is the system of record**: baselines, live and historical sensor embeddings, the full **event lifecycle**, per-user calibration and learning, incident reports, simulation queues, optional Atlas search/vector indexes, and small operational collections (heartbeats, snapshot gate, camera snapshots). Agents and FastAPI **share one database** (`MONGODB_URI`, `MONGODB_DB_NAME` in `app/config.py`).
+
+This is not a passive log store. **Triage reads false-positive priors** before calling Claude; **monitor** writes multimodal outcomes; **learning** refreshes behavioral stats and threshold multipliers on a timer. The product’s “memory” lives here.
+
+---
+
+## Architecture: how the app talks to MongoDB {#mongo-architecture}
+
+### Connection lifecycle {#feat-motor-async}
+
+- **`connect_db()`** creates `AsyncIOMotorClient`, runs **`ping`** on the admin DB, and fails fast if the cluster is unreachable (`app/database.py`).
+- **`get_db()`** returns `AsyncIOMotorDatabase` for `settings.MONGODB_DB_NAME`. Every agent’s `startup` handler and every FastAPI router that needs data calls **`connect_db()`** once per process (or relies on the app lifespan).
+
+### Why Motor fits HomePulse
+
+The safety pipeline is **async end-to-end** (FastAPI + uAgents). Motor keeps **Mongo I/O off the critical path** of the event loop without ad hoc thread pools for routine queries. The same patterns work in **`monitor_agent`** (after vision+history merge) and in **`GET /events`** (batch reads for the UI).
+
+### Flexible documents {#feat-flexible-schema}
+
+We store **rich, nested** structures where they match the domain: hourly baselines, behavioral schema keyed by event type, raw sensor payloads on events, Cloudinary URLs, optional incident embeddings. Python layers (`event_schema`, services) enforce shape at write time; MongoDB does not require upfront relational migrations for every new field (e.g. adding **`cropped_thumb_url`** to events).
+
+---
+
+## Collections and how they’re used {#collections}
+
+### `users` {#coll-users}
+
+Profile, emergency contacts, **`threshold_multiplier`** (adjusted by **`learning_service.adjust_threshold`**). **`escalation_agent`** reads contacts for HIGH/CRITICAL paths. **`users.py`** seeds a companion **`behavioral_schema`** row on insert.
+
+### `sensor_baselines` {#coll-sensor-baselines}
+
+Per-user, per-hour (weekday/weekend) statistics for z-score anomaly detection. **`anomaly_detector`**, **`baseline_service`**, **`sensor_agent`** path. **`sensor.py`** can list baselines for debugging. **`learning_agent`** does not rewrite this collection directly for the multiplier—that lives on **`users`**; calibration scripts may update baselines.
+
+### `sensor_readings` {#coll-sensor-readings}
+
+Stores **7-D normalized embeddings** (and metadata) for **normal vs anomalous** readings. Powers **multivariate** anomaly detection via **`$vectorSearch`** in **`vector_service`** (filter by `user_id`, `is_anomaly: false` neighbors). The corpus grows with **normal** points, improving neighborhood density over time.
+
+### `events` {#coll-events}
+
+Lifecycle of each anomaly: **`triage_agent`** inserts; **`monitor_agent`** sets confirmed type, severity, reasoning, **`raw_image_url`**, **`cropped_image_url`**, **`cropped_thumb_url`**, status; **`escalation_agent`** / **`notification_agent`** update notification fields; **`learning_service`** updates confirmation/learning fields. **`history_agent`** reads recent rows for **`monitor_agent`**. **`dashboard_agent`** and HTTP **`/events`** expose history to humans.
+
+Indexed / denormalized fields such as **`user_id_str`**, **`event_label`** support text search and sorting (`seed_history.py`, `event_schema`). **`learning_service.record_outcome`** updates confirmation fields and behavioral stats; **confirmed** outcomes can refresh **running baseline statistics** via **`baseline_service`**; **false positives** may trigger optional Cloudinary cleanup (see `app/config.py`).
+
+### `behavioral_schema` {#coll-behavioral-schema}
+
+Per-user aggregates: false-positive rates, occurrence patterns by event type, etc. **`triage_agent`** reads before Claude triage; **`learning_service.refresh_behavioral_schema`** recomputes from **`events`**.
+
+### `room_zones` {#coll-room-zones}
+
+Calibrated zones (pixels or fractions) per room. **`vision_service`** uses as **fallback** when Claude does not find an object in-frame.
+
+### `user_thresholds` {#coll-user-thresholds}
+
+Per-resident bands for interpreting raw sensors (including **light_level**). **`threshold_service`**; aligns “what counts as on/off” with household norms.
+
+### `incident_reports` {#coll-incident-reports}
+
+Structured records for MEDIUM+ escalations (**`incident_service`**): labels, **`risk_score`**, optional **embedding** for “similar incidents,” image URLs, resolution. Linked from **`events.incident_report_id`**. **`$vectorSearch`** on **`incident_vector_index`** for similarity; aggregations for timelines.
+
+### `agent_heartbeats` {#coll-agent-heartbeats}
+
+**`sensor_agent`** updates **`last_seen`** for **`sensor_agent`**; **`heartbeat_agent`** checks silence vs **`HEARTBEAT_TIMEOUT_SECONDS`**; **`dashboard_agent`** periodically refreshes the same row so demos show “online”; **`dashboard.py`** reads for status.
+
+### `sensor_simulation_queue` {#coll-simulation-queue}
+
+**`POST /sensor/simulate`** enqueues synthetic readings; **`sensor_agent`** drains them so **hardware is optional** for demos and CI-style runs.
+
+### `snapshot_cloudinary_gate` {#coll-snapshot-gate}
+
+**`pending_slots`** per user: **`triage_agent`** **grants** a slot when investigation is approved; **`vision_agent`** and **`POST /sensor/preview-snapshot`** **consume** atomically so Cloudinary uploads don’t stack across retries (`snapshot_cloudinary_gate.py`, `SNAPSHOT_CLOUDINARY_GATE_ENABLED`).
+
+### `camera_snapshots` {#coll-camera-snapshots}
+
+Metadata for preview / vision snapshot rows (URLs, **`cropped_thumb_url`**, `source`, `event_id`). **`camera_snapshot_service`**; **`GET /events/snapshots/...`** for the UI gallery.
+
+### `alert_log` {#coll-alert-log}
+
+**`alerts` router** — persisted alert / escalation log for inspection (separate from the core **`events`** stream).
+
+### `arduino_contracts` {#coll-arduino-contracts}
+
+**`integration` router** — optional registration payload for Arduino / contract demos.
+
+### Demo / seed-only
+
+**`raw_sensor_readings`** may appear when **`scripts/seed_history.py`** builds rich synthetic history—not required for the live agent path.
+
+---
+
+## How we used MongoDB well {#how-we-use-it}
+
+1. **Single source of truth for agents and API** — Same collections whether Claude is invoked from **`triage_agent`** or a caregiver hits **`GET /search/events`**. No split-brain between “agent DB” and “web DB.”
+
+2. **Fan-in support** — **`monitor_agent`** merges **history** and **vision** in memory, but both branches **read/write anchored on the same `event_id`** document. MongoDB’s document model matches “one event, many stages.”
+
+3. **Vectors beside operational data** — **Atlas Vector Search** runs on the same cluster as **`events`** and **`sensor_readings`**, so similarity and incidents do not need a separate vector SaaS for the demo architecture.
+
+4. **Search with a local-dev story** — **`$search`** when Atlas indexes exist; **regex fallback** in **`search_service`** when not—pitch works on Atlas; hackathon laptops still query.
+
+5. **Concurrency-sensitive helpers** — **Upload slot** uses **find_one_and_update** so only one consumer wins per credit; **incident** creation uses a **session + transaction** (when supported) to link **`incident_reports`** and **`events`**.
+
+6. **Aggregations for product narratives** — **`pattern_service`** and **`GET /incidents/risk-timeline/...`** turn raw events into “what patterns does this home show?” without shipping data to a warehouse.
+
+---
+
+## MongoDB features checklist (pitch table) {#pitch-checklist}
 
 | Feature | Where |
 |--------|--------|
-| **Atlas Vector Search** | `sensor_readings` multivariate anomalies; `incident_reports` “similar incidents” |
-| **Atlas Search ($search)** | `/search/events`, `/search/incidents` with fuzzy text |
-| **Aggregation framework** | Risk timeline, pattern report, behavioral refresh |
-| **Transactions** | Incident insert + event `incident_report_id` link |
-| **Flexible documents** | Different shapes per collection without migrations |
-| **Motor (async)** | FastAPI + agents stay non-blocking |
+| **Atlas Vector Search** | `sensor_readings` neighbors; `incident_reports` similar incidents |
+| **Atlas Search ($search)** | `/search/events`, `/search/incidents` |
+| **Aggregation framework** | Patterns, risk timeline, vector pipelines, behavioral refresh inputs |
+| **Transactions (when available)** | Incident insert + `events.incident_report_id` |
+| **Flexible documents + indexes** | Evolving event and incident shapes |
+| **Motor (async)** | `app/database.py`, all routers and agents |
+
+Scripts: **`scripts/create_search_index.py`** (Atlas); **`scripts/seed_demo.py`**, **`scripts/seed_history.py`**, **`scripts/seed_events.py`** for demos.
 
 ---
 
-## Why MongoDB Specifically
+## Data flow summary {#data-flow}
 
-**Flexible schema across document types.** Each collection has a different structure — baselines have hourly stats, events have vision URLs, behavioral schema has nested per-event-type dicts. Pydantic models handle type safety on the Python side; MongoDB stores whatever structure each agent needs without migration friction.
+```
+Sensor / simulation queue
+  → sensor_agent (baselines, embeddings → sensor_readings, vector check)
+  → events insert + triage updates
+      → parallel history + vision
+  → monitor_agent → events (images, thumb, reasoning)
+  → escalation / notification → events + optional incident_reports
 
-**Motor async driver.** The entire agent pipeline is async (FastAPI + uAgents). Motor's async driver means database calls are non-blocking inside the event loop — no thread pool overhead for the dozens of queries flying between agents on every event.
+learning_agent (daily) → behavioral_schema, users.threshold_multiplier
 
-**Atlas Vector Search as native infrastructure.** The vector search index runs inside the same cluster as the rest of the data. There's no separate vector database to maintain, no data sync, no additional authentication layer. The `$vectorSearch` aggregation stage filters by `user_id` and `is_anomaly` in a single query — a multi-tenant anomaly detector in one pipeline stage.
+dashboard / HTTP → events, behavioral_schema, agent_heartbeats
 
-**Time to demo.** MongoDB Atlas free tier handles everything — no cluster management, no operations overhead. For a hackathon system that needs to be reliable across a live demo with real sensors generating readings every 5 seconds, that matters.
+preview / vision → snapshot_cloudinary_gate, camera_snapshots
+```
 
 ---
 
-## Data Flow Summary
+## Why MongoDB specifically {#why-mongodb}
 
-```
-Arduino sensor reading (every 5s)
-    → sensor_agent
-        → anomaly_detector
-            → query sensor_baselines (z-score check)
-            → compute 7-dim embedding
-            → store in sensor_readings
-            → $vectorSearch against sensor_readings (multi-variate check)
-        → if anomalous: write to events
-            → triage_agent updates events (triage_reason, confidence)
-                → monitor_agent updates events (image URLs, recommended_action)
-                    → escalation_agent reads users (recipients)
-                        → notification_agent updates events (status: notified)
+**Schema flexibility** for a fast-moving multi-agent system: new fields (thumbs, gates, labels) ship without migrations.
 
-learning_agent (daily)
-    → reads events → writes behavioral_schema → adjusts sensor_baselines
+**Motor + async** match FastAPI and uAgents.
 
-dashboard_agent (on query)
-    → reads events (last 7 days) + behavioral_schema + agent_heartbeats
-    → feeds into Claude → returns caregiver answer
-```
+**Atlas Search + Vector Search** (when enabled) keep **text** and **embedding** retrieval in one operational store.
 
-Every read. Every write. Every decision. MongoDB.
+**Time to demo**: Atlas free tier, or local Mongo with reduced search features—**the app still runs**.
+
+---
+
+## Operator pointers {#operators}
+
+- **`MONGODB_URI`**, **`MONGODB_DB_NAME`** — root `.env`; same values for **uvicorn** and **`run_agents.py`**.
+- **`DEFAULT_USER_ID`** — 24-char hex **ObjectId** for the primary demo user; learning and some agents key off it.
+- Vector/search indexes: see **`scripts/create_search_index.py`** and **`FLOW_AND_TESTING.md`**.
